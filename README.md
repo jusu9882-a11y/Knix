@@ -37,6 +37,6 @@ Android 13+ requests Nearby Wi-Fi and Nearby Devices permissions. Android 12 and
 ## Current limitations
 
 - Discovery is implemented, but peer connection and transfer orchestration are not yet wired to the screen.
-- QR ticket parsing and generation primitives are implemented; camera scanning and the display flow await a real listening endpoint.
+- QR receive display, camera QR scanning, a short-lived ticket, and a one-time TCP rendezvous challenge are wired into the app. The rendezvous confirms that the scanned ticket reached the receiver; it is not yet the authenticated/encrypted pairing or file-transfer protocol.
 - NSD publication is disabled unless a running TCP listener port is supplied.
 - No real two-device test or Android build result is claimed until CI completes and hardware testing is performed.

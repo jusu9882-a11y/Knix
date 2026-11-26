@@ -31,6 +31,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.NavigationBar
@@ -94,16 +96,38 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme {
+            MaterialTheme(
+                colorScheme = lightColorScheme(
+                    primary = Color(0xFF20231D),
+                    onPrimary = Color.White,
+                    secondary = Color(0xFFB8F818),
+                    onSecondary = Color(0xFF20231D),
+                    background = Color(0xFFF6F7F4),
+                    surface = Color.White,
+                    onSurface = Color(0xFF20231D),
+                    onSurfaceVariant = Color(0xFF6B7068)
+                )
+            ) {
                 Scaffold(
+                    containerColor = MaterialTheme.colorScheme.background,
                     bottomBar = {
-                        NavigationBar {
+                        NavigationBar(
+                            containerColor = Color.White,
+                            tonalElevation = 8.dp
+                        ) {
                             listOf("Home", "Send", "Receive", "Devices", "Activity").forEach { tab ->
+                                val symbol = when (tab) {
+                                    "Home" -> "⌂"
+                                    "Send" -> "↗"
+                                    "Receive" -> "⇩"
+                                    "Devices" -> "⌕"
+                                    else -> "◷"
+                                }
                                 NavigationBarItem(
                                     selected = selectedTab.value == tab,
                                     onClick = { selectedTab.value = tab },
-                                    icon = {},
-                                    label = { Text(tab) }
+                                    icon = { Text(symbol, style = MaterialTheme.typography.titleMedium) },
+                                    label = { Text(tab, style = MaterialTheme.typography.labelSmall) }
                                 )
                             }
                         }
@@ -111,11 +135,20 @@ class MainActivity : ComponentActivity() {
                 ) { innerPadding ->
                     Column(
                         Modifier.fillMaxSize().padding(innerPadding)
-                            .verticalScroll(rememberScrollState()).padding(20.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                            .verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(18.dp)
                     ) {
-                        Text("KNIX", style = MaterialTheme.typography.headlineMedium)
-                        Text("Offline sharing. Nearby, fast, private.", style = MaterialTheme.typography.bodyMedium)
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text("KNIX", style = MaterialTheme.typography.headlineMedium)
+                                Text("OFFLINE  •  PRIVATE  •  DIRECT", style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Text("●", color = Color(0xFF78A900), style = MaterialTheme.typography.titleLarge)
+                        }
                         when (selectedTab.value) {
                             "Home" -> {
                                 Text("Your sharing space", style = MaterialTheme.typography.titleLarge)

@@ -131,7 +131,7 @@ object KnixEncryptedTransfer {
         socket: Socket,
         sessionKey: ByteArray,
         destinationDirectory: File,
-        onFileProgress: (Int, Int, Progress) -> Unit = {}
+        onFileProgress: (Int, Int, Progress) -> Unit = { _, _, _ -> }
     ): List<Result> {
         require(destinationDirectory.exists() || destinationDirectory.mkdirs()) { "Cannot create destination directory" }
         require(destinationDirectory.isDirectory) { "Destination is not a directory" }

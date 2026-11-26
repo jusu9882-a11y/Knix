@@ -14,6 +14,7 @@ import java.nio.ByteOrder
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import javax.crypto.Cipher
+import javax.crypto.Mac
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
@@ -95,6 +96,71 @@ object KnixEncryptedTransfer {
             "$MAGIC|$direction|$sequence".toByteArray(StandardCharsets.US_ASCII)
     }
 
+    /**
+     * Sends a bounded batch on one paired socket. Each file gets a distinct
+     * HMAC-derived AES key because each file record channel starts its nonce
+     * sequence at zero. The batch count is bounded before any file is read.
+     */
+    fun sendFiles(
+        socket: Socket,
+        sessionKey: ByteArray,
+        sources: List<Pair<File, String>>,
+        onFileProgress: (Int, Int, Progress) -> Unit = {}
+    ): List<Result> {
+        require(sources.isNotEmpty() && sources.size <= MAX_BATCH_FILES) { "Batch must contain 1-$MAX_BATCH_FILES files" }
+        val output = DataOutputStream(socket.getOutputStream())
+        output.writeInt(sources.size)
+        output.flush()
+        return sources.mapIndexed { index, (file, name) ->
+            val fileKey = deriveBatchKey(sessionKey, index)
+            try {
+                sendFile(socket, fileKey, file, name) { progress ->
+                    onFileProgress(index + 1, sources.size, progress)
+                }
+            } finally {
+                fileKey.fill(0)
+            }
+        }
+    }
+
+    /**
+     * Receives a bounded batch. Per-file partials are isolated by index so an
+     * interrupted batch cannot accidentally resume into a different file.
+     */
+    fun receiveFiles(
+        socket: Socket,
+        sessionKey: ByteArray,
+        destinationDirectory: File,
+        onFileProgress: (Int, Int, Progress) -> Unit = {}
+    ): List<Result> {
+        require(destinationDirectory.exists() || destinationDirectory.mkdirs()) { "Cannot create destination directory" }
+        require(destinationDirectory.isDirectory) { "Destination is not a directory" }
+        val count = DataInputStream(socket.getInputStream()).readInt()
+        require(count in 1..MAX_BATCH_FILES) { "Invalid batch file count" }
+        val results = ArrayList<Result>(count)
+        repeat(count) { index ->
+            val fileKey = deriveBatchKey(sessionKey, index)
+            try {
+                results += receiveFile(socket, fileKey, destinationDirectory,
+                    partialSuffix = "batch-$index") { progress ->
+                    onFileProgress(index + 1, count, progress)
+                }
+            } finally {
+                fileKey.fill(0)
+            }
+        }
+        return results
+    }
+
+    private fun deriveBatchKey(sessionKey: ByteArray, index: Int): ByteArray {
+        require(sessionKey.size == 32) { "A 256-bit session key is required" }
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(sessionKey, "HmacSHA256"))
+        return mac.doFinal("KNIX-BATCH-FILE-v1|$index".toByteArray(StandardCharsets.US_ASCII))
+    }
+
+    private const val MAX_BATCH_FILES = 50
+
     fun sendFile(
         socket: Socket,
         sessionKey: ByteArray,
@@ -157,12 +223,13 @@ object KnixEncryptedTransfer {
         socket: Socket,
         sessionKey: ByteArray,
         destinationDirectory: File,
+        partialSuffix: String? = null,
         onProgress: (Progress) -> Unit = {}
     ): Result {
         require(sessionKey.size == 32) { "A 256-bit session key is required" }
         require(destinationDirectory.exists() || destinationDirectory.mkdirs()) { "Cannot create destination directory" }
         require(destinationDirectory.isDirectory) { "Destination is not a directory" }
-        val partial = File(destinationDirectory, ".knix.pending.part")
+        val partial = File(destinationDirectory, partialSuffix?.let { ".knix-$it.pending.part" } ?: ".knix.pending.part")
         require(!partial.exists() || partial.isFile) { "Partial destination is invalid" }
         val offset = if (partial.exists()) partial.length() else 0L
         val prefixDigest = digest(partial.takeIf { it.exists() })

@@ -15,8 +15,10 @@ class KnixEncryptedTransferTest {
         val directory = createTempDir(prefix = "knix-transfer-test")
         try {
             val source = File(directory, "source.bin").apply { writeBytes(sourceBytes) }
-            val destination = File(directory, "received.bin")
-            val partial = File(directory, destination.name + ".knix.part")
+            val destinationDirectory = File(directory, "received")
+            destinationDirectory.mkdirs()
+            val destination = File(destinationDirectory, source.name)
+            val partial = File(destinationDirectory, ".knix.pending.part")
             if (resumeBytes.isNotEmpty()) partial.writeBytes(resumeBytes)
             val key = ByteArray(32) { (it * 13 + 7).toByte() }
             val server = ServerSocket(0)
@@ -25,7 +27,7 @@ class KnixEncryptedTransferTest {
             val receiver = Thread {
                 try {
                     server.accept().use { receiverResult.set(
-                        KnixEncryptedTransfer.receiveFile(it, key, destination)
+                        KnixEncryptedTransfer.receiveFile(it, key, destinationDirectory)
                     ) }
                 } catch (t: Throwable) { receiverFailure.set(t) }
             }

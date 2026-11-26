@@ -61,4 +61,40 @@ class KnixEncryptedTransferTest {
     @Test fun transfersEmptyFile() {
         transfer(ByteArray(0))
     }
+
+    @Test fun transfersMultipleFilesOverOneAuthenticatedSession() {
+        val directory = createTempDir(prefix = "knix-batch-test")
+        try {
+            val firstBytes = ByteArray(48_123) { (it * 11).toByte() }
+            val secondBytes = ByteArray(1_234_567) { (it * 23).toByte() }
+            val first = File(directory, "first.bin").apply { writeBytes(firstBytes) }
+            val second = File(directory, "second.bin").apply { writeBytes(secondBytes) }
+            val destination = File(directory, "received").apply { mkdirs() }
+            val key = ByteArray(32) { (it * 7 + 3).toByte() }
+            val server = ServerSocket(0)
+            val receiverResults = AtomicReference<List<KnixEncryptedTransfer.Result>>()
+            val receiverFailure = AtomicReference<Throwable?>()
+            val receiver = Thread {
+                try {
+                    server.accept().use {
+                        receiverResults.set(KnixEncryptedTransfer.receiveFiles(it, key, destination))
+                    }
+                } catch (t: Throwable) { receiverFailure.set(t) }
+            }
+            receiver.start()
+            val senderResults = Socket("127.0.0.1", server.localPort).use {
+                KnixEncryptedTransfer.sendFiles(it, key, listOf(first to first.name, second to second.name))
+            }
+            receiver.join(20_000)
+            server.close()
+            assertTrue("batch receiver must finish", !receiver.isAlive)
+            receiverFailure.get()?.let { throw AssertionError("batch receiver failed", it) }
+            assertEquals(2, senderResults.size)
+            assertEquals(2, receiverResults.get().size)
+            assertArrayEquals(firstBytes, File(destination, "first.bin").readBytes())
+            assertArrayEquals(secondBytes, File(destination, "second.bin").readBytes())
+            assertEquals(firstBytes.size.toLong(), receiverResults.get()[0].bytes)
+            assertEquals(secondBytes.size.toLong(), receiverResults.get()[1].bytes)
+        } finally { directory.deleteRecursively() }
+    }
 }

@@ -2,7 +2,6 @@ package dev.jusu.knix.discovery
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.AdvertiseData
@@ -21,18 +20,19 @@ import android.net.wifi.p2p.WifiP2pManager
 import android.os.Build
 import android.os.ParcelUuid
 import androidx.core.content.ContextCompat
-import java.net.InetAddress
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Discovery only: no peer is trusted or connected by discovery.
+ * Pass localTcpPort only after the KNIX TCP listener has successfully bound.
  * The authenticated KNIX handshake must run before any file data is accepted.
  */
 class KnixDiscovery(
     private val context: Context,
     private val onPeer: (DiscoveredPeer) -> Unit,
-    private val onStatus: (String) -> Unit = {}
+    private val onStatus: (String) -> Unit = {},
+    private val localTcpPort: Int? = null
 ) {
     companion object {
         const val SERVICE_TYPE = "_knix._tcp."
@@ -73,7 +73,7 @@ class KnixDiscovery(
         nsdDiscovery = null
         try { nsdRegistration?.let(nsd::unregisterService) } catch (_: Exception) { }
         nsdRegistration = null
-        if (hasBluetoothScanPermission()) {
+        if (hasBluetoothScanPermission() && hasBluetoothAdvertisePermission() && hasBluetoothConnectPermission()) {
             try { scanCallback?.let { scanner?.stopScan(it) } } catch (_: SecurityException) { }
             try { advertiseCallback?.let { bluetoothAdapter?.bluetoothLeAdvertiser?.stopAdvertising(it) } } catch (_: SecurityException) { }
         }
@@ -137,7 +137,7 @@ class KnixDiscovery(
                 nsd.resolveService(service, object : NsdManager.ResolveListener {
                     override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) { }
                     override fun onServiceResolved(info: NsdServiceInfo) {
-                        val host: InetAddress = info.host ?: return
+                        val host = info.host ?: return
                         emit(DiscoveredPeer(
                             id = "nsd:${host.hostAddress}:${info.port}",
                             name = info.serviceName ?: "Knix device",
@@ -154,6 +154,9 @@ class KnixDiscovery(
         try { nsd.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener) }
         catch (e: Exception) { onStatus("Local-network discovery unavailable: ${e.message}") }
 
+        // Never advertise a port until the TCP listener is actually running.
+        val port = localTcpPort ?: return
+        require(port in 1..65535) { "Invalid local TCP port" }
         val registration = object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(info: NsdServiceInfo) { onStatus("Knix is visible on this local network") }
             override fun onRegistrationFailed(info: NsdServiceInfo, errorCode: Int) { onStatus("Could not publish Knix service: $errorCode") }
@@ -164,7 +167,7 @@ class KnixDiscovery(
         val localService = NsdServiceInfo().apply {
             serviceName = SERVICE_NAME
             serviceType = SERVICE_TYPE
-            port = 54321
+            this.port = port
         }
         try { nsd.registerService(localService, NsdManager.PROTOCOL_DNS_SD, registration) }
         catch (e: Exception) { onStatus("Could not publish local Knix service: ${e.message}") }
@@ -173,56 +176,65 @@ class KnixDiscovery(
     @SuppressLint("MissingPermission")
     private fun startBle() {
         val adapter = bluetoothAdapter ?: return onStatus("Bluetooth LE is unavailable")
-        if (!adapter.isEnabled) return onStatus("Turn on Bluetooth to enable nearby discovery")
-        if (!hasBluetoothScanPermission()) return onStatus("Grant Nearby Devices permission for Bluetooth discovery")
-        val advertiser = adapter.bluetoothLeAdvertiser
-        scanner = adapter.bluetoothLeScanner
-        val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
-            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
-            .setConnectable(false)
-            .build()
-        val data = AdvertiseData.Builder()
-            .addServiceUuid(ParcelUuid(SERVICE_UUID))
-            .setIncludeDeviceName(false)
-            .build()
+        if (!hasBluetoothScanPermission() || !hasBluetoothAdvertisePermission() || !hasBluetoothConnectPermission()) {
+            return onStatus("Grant Nearby Devices permissions for Bluetooth discovery")
+        }
         try {
+            if (!adapter.isEnabled) return onStatus("Turn on Bluetooth to enable nearby discovery")
+            val advertiser = adapter.bluetoothLeAdvertiser
+            scanner = adapter.bluetoothLeScanner
+            val settings = AdvertiseSettings.Builder()
+                .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+                .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
+                .setConnectable(false)
+                .build()
+            val data = AdvertiseData.Builder()
+                .addServiceUuid(ParcelUuid(SERVICE_UUID))
+                .setIncludeDeviceName(false)
+                .build()
             if (advertiser != null) {
-                val callback = object : AdvertiseCallback() {
+                val advertise = object : AdvertiseCallback() {
                     override fun onStartSuccess(settingsInEffect: AdvertiseSettings) { onStatus("Bluetooth LE presence is active") }
                     override fun onStartFailure(errorCode: Int) { onStatus("Bluetooth LE advertising failed: $errorCode") }
                 }
-                advertiseCallback = callback
-                advertiser.startAdvertising(settings, data, callback)
+                advertiseCallback = advertise
+                advertiser.startAdvertising(settings, data, advertise)
             }
-            val callback = object : ScanCallback() {
+            val scan = object : ScanCallback() {
                 override fun onScanResult(callbackType: Int, result: ScanResult) {
                     val record = result.scanRecord ?: return
-                    if (record.serviceUuids?.none { it.uuid == SERVICE_UUID } != false) return
+                    if (record.serviceUuids?.any { it.uuid == SERVICE_UUID } != true) return
                     val device = result.device
                     emit(DiscoveredPeer(
                         id = "ble:${device.address}",
-                        name = device.name?.takeIf(String::isNotBlank) ?: "Nearby Knix device",
+                        name = "Nearby Knix device",
                         address = device.address,
                         transport = DiscoveryTransport.BLUETOOTH_LE
                     ))
                 }
                 override fun onScanFailed(errorCode: Int) { onStatus("Bluetooth LE scan failed: $errorCode") }
             }
-            scanCallback = callback
-            scanner?.startScan(callback)
+            scanCallback = scan
+            scanner?.startScan(scan)
         } catch (_: SecurityException) {
             onStatus("Bluetooth permission was revoked")
         }
     }
 
+    private fun granted(permission: String): Boolean =
+        ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+
     private fun hasWifiPermission(): Boolean {
         val permission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.NEARBY_WIFI_DEVICES else Manifest.permission.ACCESS_FINE_LOCATION
-        return ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+        return granted(permission)
     }
 
-    private fun hasBluetoothScanPermission(): Boolean {
-        val permission = if (Build.VERSION.SDK_INT >= 31) Manifest.permission.BLUETOOTH_SCAN else Manifest.permission.ACCESS_FINE_LOCATION
-        return ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
-    }
+    private fun hasBluetoothScanPermission(): Boolean =
+        granted(if (Build.VERSION.SDK_INT >= 31) Manifest.permission.BLUETOOTH_SCAN else Manifest.permission.ACCESS_FINE_LOCATION)
+
+    private fun hasBluetoothAdvertisePermission(): Boolean =
+        Build.VERSION.SDK_INT < 31 || granted(Manifest.permission.BLUETOOTH_ADVERTISE)
+
+    private fun hasBluetoothConnectPermission(): Boolean =
+        Build.VERSION.SDK_INT < 31 || granted(Manifest.permission.BLUETOOTH_CONNECT)
 }

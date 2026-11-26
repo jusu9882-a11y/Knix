@@ -50,6 +50,7 @@ class MainActivity : ComponentActivity() {
     private var discovery: KnixDiscovery? = null
     private var rendezvous: KnixRendezvousServer? = null
     // Ephemeral session material stays in memory only; no pairing key is persisted.
+    private var pairedSessionKey: ByteArray? = null
 
     private val qrScanLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {

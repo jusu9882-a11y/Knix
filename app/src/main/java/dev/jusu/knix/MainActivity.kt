@@ -110,13 +110,11 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         }
-                        if (pairedSocket != null && !isReceiver) {
-                            Card(Modifier.fillMaxWidth()) {
-                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text("Secure connection ready", style = MaterialTheme.typography.titleMedium)
-                                    Button(onClick = { openFileLauncher.launch(arrayOf("*/*")) }) {
-                                        Text("Choose file to send")
-                                    }
+                        Card(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("Send files", style = MaterialTheme.typography.titleMedium)
+                                Button(onClick = { openFileLauncher.launch(arrayOf("*/*")) }) {
+                                    Text("Choose file to send")
                                 }
                             }
                         }
@@ -225,7 +223,7 @@ class MainActivity : ComponentActivity() {
                 contentResolver.openInputStream(uri)?.use { input ->
                     temp.outputStream().use { output -> input.copyTo(output) }
                 } ?: throw IllegalStateException("Cannot open selected file")
-                val result = KnixEncryptedTransfer.sendFile(socket, key, temp) { progress ->
+                val result = KnixEncryptedTransfer.sendFile(socket, key, temp, name) { progress ->
                     runOnUiThread { transferProgress.value = "${progress.transferred} / ${progress.total} bytes" }
                 }
                 runOnUiThread {
@@ -234,7 +232,11 @@ class MainActivity : ComponentActivity() {
                     closePairedConnection()
                 }
             } catch (e: Exception) {
-                runOnUiThread { status.value = "Send failed: ${e.message ?: "connection error"}. Reconnect to retry or resume." }
+                try { socket.close() } catch (_: Exception) { }
+                runOnUiThread {
+                    closePairedConnection()
+                    status.value = "Send failed: ${e.message ?: "connection error"}. Reconnect to resume the saved partial file."
+                }
             } finally {
                 key.fill(0)
                 temp?.delete()
@@ -277,6 +279,10 @@ class MainActivity : ComponentActivity() {
                         closePairedConnection()
                     }
                 } catch (e: Exception) {
+                    try { socket.close() } catch (_: Exception) { }
+                    pairedSessionKey?.fill(0)
+                    pairedSessionKey = null
+                    pairedSocket = null
                     runOnUiThread {
                         status.value = "Receive failed: ${e.message ?: "connection error"}. Partial data is kept for resume."
                         transferProgress.value = ""

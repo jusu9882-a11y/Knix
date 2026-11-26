@@ -153,13 +153,14 @@ object KnixEncryptedTransfer {
     fun receiveFile(
         socket: Socket,
         sessionKey: ByteArray,
-        destination: File,
+        destinationDirectory: File,
         onProgress: (Progress) -> Unit = {}
     ): Result {
         require(sessionKey.size == 32) { "A 256-bit session key is required" }
-        require(!destination.exists() || destination.isFile) { "Destination is not a file" }
-        destination.parentFile?.let { require(it.exists() || it.mkdirs()) { "Cannot create destination directory" } }
-        val partial = File(destination.parentFile, destination.name + ".knix.part")
+        require(destinationDirectory.exists() || destinationDirectory.mkdirs()) { "Cannot create destination directory" }
+        require(destinationDirectory.isDirectory) { "Destination is not a directory" }
+        val partial: File
+        var destination: File
         require(!destination.exists()) { "Destination already exists" }
         require(!partial.exists() || partial.isFile) { "Partial destination is invalid" }
         val offset = if (partial.exists()) partial.length() else 0L
@@ -177,6 +178,10 @@ object KnixEncryptedTransfer {
         val expectedPrefix = ByteArray(32).also(meta::readFully)
         require(meta.available() == 0 && name.isNotBlank() && name.length <= 240) { "Invalid file metadata" }
         require(File(name).name == name && !name.contains('/') && !name.contains('\\\\')) { "Unsafe file name" }
+        destination = File(destinationDirectory, name)
+        require(!destination.exists()) { "A file with this name already exists in the receive folder" }
+        partial = File(destinationDirectory, name + ".knix.part")
+        require(!partial.exists() || partial.isFile) { "Partial destination is invalid" }
         require(total >= 0 && senderOffset == offset && offset <= total) { "Invalid transfer size or resume offset" }
         require(MessageDigest.isEqual(prefixDigest, expectedPrefix)) { "Partial file digest mismatch" }
 

@@ -4,17 +4,22 @@ Knix is an offline-first Android peer-to-peer file-sharing project.
 
 ## Current repository milestone
 
-The Android Kotlin + Jetpack Compose scaffold includes:
+The Android Kotlin + Jetpack Compose app currently includes:
 - Wi-Fi Direct peer discovery.
 - Android NSD/DNS-SD discovery on the local network.
 - Optional NSD service publication, enabled only when the TCP listener's active port is supplied.
 - Bluetooth LE presence advertising and scanning using a Knix service UUID.
 - Runtime permission requests and a basic nearby-device discovery screen.
-- A versioned `knix://connect` QR ticket model with strict field validation, short expiry (15–300 seconds), a cryptographically random one-time challenge, and offline QR bitmap generation using ZXing.
+- A versioned `knix://connect` QR ticket with strict validation, short expiry (15–300 seconds), a cryptographically random one-time challenge, offline QR generation, and camera scanning.
+- A one-time TCP pairing listener and a P-256 ECDH handshake with mutual HMAC-SHA-256 key confirmation.
+- HKDF-SHA-256 session-key derivation bound to the QR challenge and full ephemeral-key transcript. The resulting 256-bit session key remains in memory only; no pairing key is persisted.
+- A short peer-key fingerprint shown after pairing. The handshake rejects mismatched QR challenges and bounds all handshake messages.
 
 A QR ticket is an introduction to a live receiver endpoint, not a transfer channel. It must only be generated after a real TCP listener has bound to a reachable address and port. The ticket does not contain a private key; scanning must be followed by an authenticated handshake and explicit peer approval. Expired, oversized, malformed, or unsupported-version tickets are rejected.
 
-Discovery is not a connection or trust decision. A discovered peer must complete the authenticated KNIX handshake before receiving file data. Bluetooth LE is used for presence discovery, not bulk file transfer. The current screen displays discovered peers; QR scanning/display is not yet wired into the screen, and there is not yet a TCP listener or file transfer flow.
+Discovery is not a connection or trust decision. Bluetooth LE is used for presence discovery, not bulk file transfer. QR pairing now completes an ephemeral P-256 ECDH exchange and confirms both sides possess the short-lived QR challenge before deriving a shared session key.
+
+**Security boundary:** the QR challenge is a bearer secret. Anyone who copies the QR while it is valid may attempt to pair, so users should show it only to the intended nearby device and close it after pairing. This initial pairing milestone does not yet provide a user-confirmed fingerprint comparison screen, persistent device identity, encrypted record framing, replay-resistant transfer protocol, or file transfer. Do not treat it as a finished production security review.
 
 ## Offline networking note
 
@@ -37,6 +42,6 @@ Android 13+ requests Nearby Wi-Fi and Nearby Devices permissions. Android 12 and
 ## Current limitations
 
 - Discovery is implemented, but peer connection and transfer orchestration are not yet wired to the screen.
-- QR receive display, camera QR scanning, a short-lived ticket, and a one-time TCP rendezvous challenge are wired into the app. The rendezvous confirms that the scanned ticket reached the receiver; it is not yet the authenticated/encrypted pairing or file-transfer protocol.
+- QR receive display, camera scanning, a short-lived ticket, one-time TCP listener, and authenticated ephemeral key agreement are implemented. Encrypted file framing and actual file transfer are not yet implemented.
 - NSD publication is disabled unless a running TCP listener port is supplied.
 - No real two-device test or Android build result is claimed until CI completes and hardware testing is performed.

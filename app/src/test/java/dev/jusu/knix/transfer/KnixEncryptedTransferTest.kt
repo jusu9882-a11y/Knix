@@ -95,6 +95,30 @@ class KnixEncryptedTransferTest {
             assertArrayEquals(secondBytes, File(destination, "second.bin").readBytes())
             assertEquals(firstBytes.size.toLong(), receiverResults.get()[0].bytes)
             assertEquals(secondBytes.size.toLong(), receiverResults.get()[1].bytes)
+
+            // Replaying a batch after a lost completion acknowledgement must be safe.
+            val retryServer = ServerSocket(0)
+            val retryResults = AtomicReference<List<KnixEncryptedTransfer.Result>>()
+            val retryFailure = AtomicReference<Throwable?>()
+            val retryReceiver = Thread {
+                try {
+                    retryServer.accept().use {
+                        retryResults.set(KnixEncryptedTransfer.receiveFiles(it, key, destination))
+                    }
+                } catch (t: Throwable) { retryFailure.set(t) }
+            }
+            retryReceiver.start()
+            val retrySenderResults = Socket("127.0.0.1", retryServer.localPort).use {
+                KnixEncryptedTransfer.sendFiles(it, key, listOf(first to first.name, second to second.name))
+            }
+            retryReceiver.join(20_000)
+            retryServer.close()
+            assertTrue("batch retry receiver must finish", !retryReceiver.isAlive)
+            retryFailure.get()?.let { throw AssertionError("batch retry failed", it) }
+            assertEquals(2, retrySenderResults.size)
+            assertEquals(2, retryResults.get().size)
+            assertArrayEquals(firstBytes, File(destination, "first.bin").readBytes())
+            assertArrayEquals(secondBytes, File(destination, "second.bin").readBytes())
         } finally { directory.deleteRecursively() }
     }
 }

@@ -6,11 +6,15 @@ import android.graphics.Bitmap
 import android.os.Build
 import android.os.Bundle
 import android.app.Activity
+import android.net.Uri
+import android.content.Intent
+import android.provider.OpenableColumns
+import android.os.Environment
 import com.google.zxing.integration.android.IntentIntegrator
 import com.journeyapps.barcodescanner.CaptureActivity
+import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
-import java.nio.charset.StandardCharsets
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -41,24 +45,31 @@ import dev.jusu.knix.quickconnect.QuickConnectQr
 import dev.jusu.knix.quickconnect.QuickConnectTicket
 import dev.jusu.knix.transfer.KnixRendezvousServer
 import dev.jusu.knix.transfer.KnixSecurePairing
+import dev.jusu.knix.transfer.KnixEncryptedTransfer
+import java.util.concurrent.Executors
 
 class MainActivity : ComponentActivity() {
     private val peers = mutableStateListOf<DiscoveredPeer>()
     private val status = mutableStateOf("Ready to discover nearby devices")
     private val qrBitmap = mutableStateOf<Bitmap?>(null)
     private val qrExpiry = mutableStateOf("")
+    private val transferProgress = mutableStateOf("")
     private var discovery: KnixDiscovery? = null
     private var rendezvous: KnixRendezvousServer? = null
-    // Ephemeral session material stays in memory only; no pairing key is persisted.
     private var pairedSessionKey: ByteArray? = null
+    private var pairedSocket: Socket? = null
+    private var isReceiver = false
+    private val transferExecutor = Executors.newSingleThreadExecutor()
 
+    private val openFileLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) sendSelectedFile(uri)
+    }
     private val qrScanLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             val raw = result.data?.getStringExtra("SCAN_RESULT")
             if (raw.isNullOrBlank()) status.value = "No QR code was read" else connectFromQr(raw)
         } else status.value = "QR scan cancelled"
     }
-
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
@@ -78,6 +89,7 @@ class MainActivity : ComponentActivity() {
                         Text("Knix", style = MaterialTheme.typography.headlineLarge)
                         Text("Offline sharing. Nearby, fast, private.", style = MaterialTheme.typography.bodyLarge)
                         Text(status.value, style = MaterialTheme.typography.bodyMedium)
+                        if (transferProgress.value.isNotBlank()) Text(transferProgress.value, style = MaterialTheme.typography.bodySmall)
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             Button(onClick = ::requestPermissionsAndStart) { Text("Find devices") }
                             OutlinedButton(onClick = ::stopDiscovery) { Text("Stop scan") }
@@ -85,16 +97,26 @@ class MainActivity : ComponentActivity() {
                         Card(Modifier.fillMaxWidth()) {
                             Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                 Text("QR Quick Connect", style = MaterialTheme.typography.titleMedium)
-                                Text("Show a temporary QR code so another Knix device can find this phone on the local network.")
+                                Text("Create a temporary receive code or scan another Knix phone. Both phones must be on the same Wi-Fi or hotspot.")
                                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    Button(onClick = ::startQuickConnect) { Text("Create receive QR") }
+                                    Button(onClick = ::startQuickConnect) { Text("Receive") }
                                     OutlinedButton(onClick = ::scanQuickConnect) { Text("Scan QR") }
                                 }
-                                OutlinedButton(onClick = ::stopQuickConnect) { Text("Close QR / receiver") }
+                                OutlinedButton(onClick = ::stopQuickConnect) { Text("Close connection") }
                                 qrBitmap.value?.let { bitmap ->
                                     Image(bitmap.asImageBitmap(), "Temporary Knix quick connect QR code",
                                         Modifier.fillMaxWidth().padding(horizontal = 12.dp))
                                     Text(qrExpiry.value, style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
+                        if (pairedSocket != null && !isReceiver) {
+                            Card(Modifier.fillMaxWidth()) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text("Secure connection ready", style = MaterialTheme.typography.titleMedium)
+                                    Button(onClick = { openFileLauncher.launch(arrayOf("*/*")) }) {
+                                        Text("Choose file to send")
+                                    }
                                 }
                             }
                         }
@@ -111,8 +133,6 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         }
-                        Text("QR now establishes an authenticated encrypted session key. Encrypted file transfer is still under development.",
-                            style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
@@ -154,7 +174,6 @@ class MainActivity : ComponentActivity() {
         status.value = "Discovery stopped"
     }
 
-
     private fun scanQuickConnect() {
         val intent = IntentIntegrator(this).apply {
             setCaptureActivity(CaptureActivity::class.java)
@@ -167,49 +186,103 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun connectFromQr(raw: String) {
-        val ticket = try {
-            QuickConnectTicket.parse(raw)
-        } catch (e: Exception) {
+        val ticket = try { QuickConnectTicket.parse(raw) }
+        catch (e: Exception) {
             status.value = "Invalid Knix QR: " + (e.message ?: "cannot read ticket")
             return
         }
-        status.value = "Starting secure pairing with " + ticket.deviceName + "…"
-        Thread {
+        status.value = "Connecting securely to " + ticket.deviceName + "…"
+        transferExecutor.execute {
             try {
-                val paired = Socket().use { socket ->
-                    socket.connect(InetSocketAddress(ticket.host, ticket.port), 5000)
-                    KnixSecurePairing.initiate(socket, ticket.challenge)
-                }
+                val socket = Socket()
+                socket.connect(InetSocketAddress(ticket.host, ticket.port), 5000)
+                socket.soTimeout = 0
+                val paired = KnixSecurePairing.initiate(socket, ticket.challenge)
+                socket.soTimeout = 0
                 runOnUiThread {
-                    pairedSessionKey?.fill(0)
+                    closePairedConnection()
+                    pairedSocket = socket
                     pairedSessionKey = paired.sessionKey.copyOf()
-                    status.value = "Secure pairing complete with " + ticket.deviceName +
-                        ". Fingerprint: " + paired.peerFingerprint + ". File transfer is next."
+                    isReceiver = false
+                    status.value = "Securely connected to " + ticket.deviceName +
+                        ". Fingerprint: " + paired.peerFingerprint + ". Choose a file to send."
                 }
             } catch (e: Exception) {
-                runOnUiThread {
-                    status.value = "Secure pairing failed: " + (e.message ?: "network or protocol error")
-                }
+                runOnUiThread { status.value = "Secure pairing failed: " + (e.message ?: "network or protocol error") }
             }
-        }.start()
+        }
     }
+
+    private fun sendSelectedFile(uri: Uri) {
+        val socket = pairedSocket ?: run { status.value = "Connect to a receiver first"; return }
+        val key = pairedSessionKey?.copyOf() ?: run { status.value = "Secure session key is unavailable"; return }
+        status.value = "Preparing selected file…"
+        transferExecutor.execute {
+            var temp: File? = null
+            try {
+                val name = queryDisplayName(uri) ?: "Knix-file"
+                temp = File(cacheDir, "knix-send-${System.nanoTime()}.tmp")
+                contentResolver.openInputStream(uri)?.use { input ->
+                    temp.outputStream().use { output -> input.copyTo(output) }
+                } ?: throw IllegalStateException("Cannot open selected file")
+                val result = KnixEncryptedTransfer.sendFile(socket, key, temp) { progress ->
+                    runOnUiThread { transferProgress.value = "${progress.transferred} / ${progress.total} bytes" }
+                }
+                runOnUiThread {
+                    status.value = "Transfer complete. Sent ${result.bytes} bytes; SHA-256 verified by receiver."
+                    transferProgress.value = ""
+                    closePairedConnection()
+                }
+            } catch (e: Exception) {
+                runOnUiThread { status.value = "Send failed: ${e.message ?: "connection error"}. Reconnect to retry or resume." }
+            } finally {
+                key.fill(0)
+                temp?.delete()
+            }
+        }
+    }
+
+    private fun queryDisplayName(uri: Uri): String? =
+        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        }
 
     private fun startQuickConnect() {
         if (rendezvous != null) return
+        closePairedConnection()
         val server = KnixRendezvousServer(
             onReady = { ticket ->
                 runOnUiThread {
                     qrBitmap.value = QuickConnectQr.render(ticket.encode())
-                    qrExpiry.value = "Expires at " + ticket.expiresAtEpochSeconds +
-                        ". Keep both phones on the same Wi-Fi or hotspot."
+                    qrExpiry.value = "Expires at ${ticket.expiresAtEpochSeconds}. Keep both phones on the same Wi-Fi or hotspot."
                 }
             },
             onStatus = { message -> runOnUiThread { status.value = message } },
-            onPaired = { paired -> runOnUiThread {
-                pairedSessionKey?.fill(0)
+            onPaired = { socket, paired ->
+                socket.soTimeout = 0
                 pairedSessionKey = paired.sessionKey.copyOf()
-                status.value = "Secure pairing complete. Peer fingerprint: " + paired.peerFingerprint + ". File transfer is next."
-            } }
+                pairedSocket = socket
+                isReceiver = true
+                runOnUiThread {
+                    status.value = "Securely connected. Waiting for the sender to choose a file. Fingerprint: ${paired.peerFingerprint}"
+                }
+                val folder = File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: filesDir, "Knix Received")
+                try {
+                    val result = KnixEncryptedTransfer.receiveFile(socket, paired.sessionKey, folder) { progress ->
+                        runOnUiThread { transferProgress.value = "${progress.transferred} / ${progress.total} bytes" }
+                    }
+                    runOnUiThread {
+                        status.value = "Received ${result.file.name} (${result.bytes} bytes). SHA-256 verified. Saved in: ${folder.absolutePath}"
+                        transferProgress.value = ""
+                        closePairedConnection()
+                    }
+                } catch (e: Exception) {
+                    runOnUiThread {
+                        status.value = "Receive failed: ${e.message ?: "connection error"}. Partial data is kept for resume."
+                        transferProgress.value = ""
+                    }
+                }
+            }
         )
         rendezvous = server
         if (!server.start(Build.MODEL ?: "Android device")) {
@@ -218,21 +291,28 @@ class MainActivity : ComponentActivity() {
         } else status.value = "Starting local receiver…"
     }
 
+    private fun closePairedConnection() {
+        try { pairedSocket?.close() } catch (_: Exception) { }
+        pairedSocket = null
+        pairedSessionKey?.fill(0)
+        pairedSessionKey = null
+        isReceiver = false
+    }
+
     private fun stopQuickConnect() {
         rendezvous?.stop()
         rendezvous = null
+        closePairedConnection()
         qrBitmap.value = null
         qrExpiry.value = ""
-        pairedSessionKey?.fill(0)
-        pairedSessionKey = null
+        transferProgress.value = ""
         status.value = "Quick Connect closed"
     }
 
     override fun onDestroy() {
         stopDiscovery()
         stopQuickConnect()
-        pairedSessionKey?.fill(0)
-        pairedSessionKey = null
+        transferExecutor.shutdownNow()
         super.onDestroy()
     }
 }

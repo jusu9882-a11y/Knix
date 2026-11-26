@@ -105,7 +105,7 @@ object KnixEncryptedTransfer {
         require(sessionKey.size == 32) { "A 256-bit session key is required" }
         require(source.isFile && source.canRead()) { "Selected file cannot be read" }
         require(displayName.isNotBlank() && displayName.toByteArray(StandardCharsets.UTF_8).size <= 240 &&
-            File(displayName).name == displayName && !displayName.contains(92.toChar()) && !displayName.contains('\\\\')) {
+            File(displayName).name == displayName && !displayName.contains('/') && displayName.indexOf(92.toChar()) < 0) {
             "Invalid or overlong file name"
         }
         val total = source.length()
@@ -179,7 +179,7 @@ object KnixEncryptedTransfer {
         val expectedDigest = ByteArray(32).also(meta::readFully)
         val expectedPrefix = ByteArray(32).also(meta::readFully)
         require(meta.available() == 0 && name.isNotBlank() && name.length <= 240) { "Invalid file metadata" }
-        require(File(name).name == name && !name.contains(92.toChar()) && !name.contains('\\\\')) { "Unsafe file name" }
+        require(File(name).name == name && !name.contains('/') && name.indexOf(92.toChar()) < 0) { "Unsafe file name" }
         destination = File(destinationDirectory, name)
         require(!destination.exists()) { "A file with this name already exists in the receive folder" }
         require(total >= 0 && senderOffset == offset && offset <= total) { "Invalid transfer size or resume offset" }

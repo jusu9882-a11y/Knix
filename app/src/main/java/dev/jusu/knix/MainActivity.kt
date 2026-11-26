@@ -40,6 +40,7 @@ import dev.jusu.knix.discovery.KnixDiscovery
 import dev.jusu.knix.quickconnect.QuickConnectQr
 import dev.jusu.knix.quickconnect.QuickConnectTicket
 import dev.jusu.knix.transfer.KnixRendezvousServer
+import dev.jusu.knix.transfer.KnixSecurePairing
 
 class MainActivity : ComponentActivity() {
     private val peers = mutableStateListOf<DiscoveredPeer>()
@@ -48,6 +49,7 @@ class MainActivity : ComponentActivity() {
     private val qrExpiry = mutableStateOf("")
     private var discovery: KnixDiscovery? = null
     private var rendezvous: KnixRendezvousServer? = null
+    // Ephemeral session material stays in memory only; no pairing key is persisted.
 
     private val qrScanLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
@@ -108,7 +110,7 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         }
-                        Text("QR currently establishes a one-time local rendezvous only. Secure pairing and file transfer are still under development.",
+                        Text("QR now establishes an authenticated encrypted session key. Encrypted file transfer is still under development.",
                             style = MaterialTheme.typography.bodySmall)
                     }
                 }
@@ -170,22 +172,24 @@ class MainActivity : ComponentActivity() {
             status.value = "Invalid Knix QR: " + (e.message ?: "cannot read ticket")
             return
         }
-        status.value = "Connecting to " + ticket.deviceName + "…"
+        status.value = "Starting secure pairing with " + ticket.deviceName + "…"
         Thread {
-            val message = try {
-                Socket().use { socket ->
+            try {
+                val paired = Socket().use { socket ->
                     socket.connect(InetSocketAddress(ticket.host, ticket.port), 5000)
-                    socket.soTimeout = 5000
-                    socket.getOutputStream().write(("KNIX-HELLO/1 " + ticket.challenge + "\n").toByteArray(StandardCharsets.US_ASCII))
-                    val response = socket.getInputStream().bufferedReader(StandardCharsets.US_ASCII).readLine()?.take(128)
-                    if (response == "KNIX-RENDEZVOUS-OK/1") {
-                        "QR rendezvous reached " + ticket.deviceName + ". Secure pairing is the next stage."
-                    } else "Receiver rejected the QR rendezvous"
+                    KnixSecurePairing.initiate(socket, ticket.challenge)
+                }
+                runOnUiThread {
+                    pairedSessionKey?.fill(0)
+                    pairedSessionKey = paired.sessionKey.copyOf()
+                    status.value = "Secure pairing complete with " + ticket.deviceName +
+                        ". Fingerprint: " + paired.peerFingerprint + ". File transfer is next."
                 }
             } catch (e: Exception) {
-                "Could not connect: " + (e.message ?: "network error")
+                runOnUiThread {
+                    status.value = "Secure pairing failed: " + (e.message ?: "network or protocol error")
+                }
             }
-            runOnUiThread { status.value = message }
         }.start()
     }
 
@@ -199,7 +203,12 @@ class MainActivity : ComponentActivity() {
                         ". Keep both phones on the same Wi-Fi or hotspot."
                 }
             },
-            onStatus = { message -> runOnUiThread { status.value = message } }
+            onStatus = { message -> runOnUiThread { status.value = message } },
+            onPaired = { paired -> runOnUiThread {
+                pairedSessionKey?.fill(0)
+                pairedSessionKey = paired.sessionKey.copyOf()
+                status.value = "Secure pairing complete. Peer fingerprint: " + paired.peerFingerprint + ". File transfer is next."
+            } }
         )
         rendezvous = server
         if (!server.start(Build.MODEL ?: "Android device")) {
@@ -213,12 +222,16 @@ class MainActivity : ComponentActivity() {
         rendezvous = null
         qrBitmap.value = null
         qrExpiry.value = ""
+        pairedSessionKey?.fill(0)
+        pairedSessionKey = null
         status.value = "Quick Connect closed"
     }
 
     override fun onDestroy() {
         stopDiscovery()
         stopQuickConnect()
+        pairedSessionKey?.fill(0)
+        pairedSessionKey = null
         super.onDestroy()
     }
 }

@@ -248,35 +248,64 @@ object KnixEncryptedTransfer {
         require(meta.available() == 0 && name.isNotBlank() && name.length <= 240) { "Invalid file metadata" }
         require(File(name).name == name && !name.contains('/') && name.indexOf(92.toChar()) < 0) { "Unsafe file name" }
         destination = File(destinationDirectory, name)
-        require(!destination.exists()) { "A file with this name already exists in the receive folder" }
         require(total >= 0 && senderOffset == offset && offset <= total) { "Invalid transfer size or resume offset" }
         require(MessageDigest.isEqual(prefixDigest, expectedPrefix)) { "Partial file digest mismatch" }
+        // A retried batch can replay files committed before a disconnect. Only
+        // accept an existing destination when authenticated metadata matches it.
+        val alreadyCommitted = destination.exists()
+        if (alreadyCommitted) {
+            require(destination.isFile && destination.length() == total &&
+                MessageDigest.isEqual(digest(destination), expectedDigest)) {
+                "A different file with this name already exists in the receive folder"
+            }
+        }
 
-        RandomAccessFile(partial, "rw").use { output ->
-            output.seek(offset)
+        val receivedDigest = MessageDigest.getInstance("SHA-256")
+        if (alreadyCommitted) {
             var received = offset
             while (received < total) {
                 val chunk = channel.receive(TYPE_CHUNK)
                 require(chunk.isNotEmpty() && chunk.size <= CHUNK_SIZE &&
                     chunk.size.toLong() <= total - received) { "Invalid file chunk" }
-                output.write(chunk)
+                receivedDigest.update(chunk)
                 received += chunk.size
                 onProgress(Progress(received, total))
             }
             require(channel.receive(TYPE_END).isEmpty()) { "Unexpected end frame payload" }
-            output.fd.sync()
-        }
-        require(partial.length() == total) { "Received file size mismatch" }
-        val actualDigest = digest(partial)
-        if (!MessageDigest.isEqual(actualDigest, expectedDigest)) {
-            partial.delete()
-            throw SecurityException("File SHA-256 verification failed; invalid partial data was discarded")
-        }
-        if (!partial.renameTo(destination)) {
-            FileInputStream(partial).use { input ->
-                FileOutputStream(destination).use { output -> input.copyTo(output); output.fd.sync() }
+        } else {
+            RandomAccessFile(partial, "rw").use { output ->
+                output.seek(offset)
+                var received = offset
+                while (received < total) {
+                    val chunk = channel.receive(TYPE_CHUNK)
+                    require(chunk.isNotEmpty() && chunk.size <= CHUNK_SIZE &&
+                        chunk.size.toLong() <= total - received) { "Invalid file chunk" }
+                    output.write(chunk)
+                    receivedDigest.update(chunk)
+                    received += chunk.size
+                    onProgress(Progress(received, total))
+                }
+                require(channel.receive(TYPE_END).isEmpty()) { "Unexpected end frame payload" }
+                output.fd.sync()
             }
-            require(partial.delete()) { "Could not clean up partial transfer" }
+        }
+        val actualDigest = if (alreadyCommitted) receivedDigest.digest() else {
+            require(partial.length() == total) { "Received file size mismatch" }
+            digest(partial)
+        }
+        if (!MessageDigest.isEqual(actualDigest, expectedDigest)) {
+            if (!alreadyCommitted) partial.delete()
+            throw SecurityException("File SHA-256 verification failed; invalid transfer data was discarded")
+        }
+        if (!alreadyCommitted) {
+            if (!partial.renameTo(destination)) {
+                FileInputStream(partial).use { input ->
+                    FileOutputStream(destination).use { output -> input.copyTo(output); output.fd.sync() }
+                }
+                require(partial.delete()) { "Could not clean up partial transfer" }
+            }
+        } else {
+            partial.delete()
         }
         channel.send(TYPE_ACK, actualDigest)
         return Result(destination, total, actualDigest.hex())

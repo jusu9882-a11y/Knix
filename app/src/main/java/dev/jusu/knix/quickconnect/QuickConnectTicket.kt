@@ -5,6 +5,7 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import java.net.URI
+import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.security.SecureRandom
@@ -21,10 +22,13 @@ data class QuickConnectTicket(
     val deviceName: String
 ) {
     fun encode(): String {
-        require(host.isNotBlank() && host.length <= 253)
+        require(host.isNotBlank() && host.length <= 253 && host.matches(Regex("[A-Za-z0-9:.\\-]+"))) {
+            "Invalid receiver host"
+        }
         require(port in 1..65535)
         require(challenge.matches(Regex("[A-Za-z0-9_-]{32,128}")))
-        require(deviceName.length <= 64)
+        require(deviceName.length in 1..64 && deviceName.none { it.isISOControl() })
+        require(expiresAtEpochSeconds > 0)
         return "knix://connect?v=1&host=${enc(host)}&port=$port&challenge=$challenge&expires=$expiresAtEpochSeconds&name=${enc(deviceName)}"
     }
 
@@ -54,11 +58,16 @@ data class QuickConnectTicket(
             require(raw.length <= 2048) { "QR payload is too large" }
             val uri = URI(raw)
             require(uri.scheme == "knix" && uri.host == "connect") { "Not a Knix connection QR" }
-            val values = uri.rawQuery.orEmpty().split('&').associate { part ->
+            val pairs = uri.rawQuery.orEmpty().split('&').map { part ->
                 val pair = part.split('=', limit = 2)
                 require(pair.size == 2) { "Malformed QR field" }
-                java.net.URLDecoder.decode(pair[0], StandardCharsets.UTF_8.name()) to
-                    java.net.URLDecoder.decode(pair[1], StandardCharsets.UTF_8.name())
+                URLDecoder.decode(pair[0], StandardCharsets.UTF_8.name()) to
+                    URLDecoder.decode(pair[1], StandardCharsets.UTF_8.name())
+            }
+            require(pairs.map { it.first }.toSet().size == pairs.size) { "Duplicate QR fields" }
+            val values = pairs.toMap()
+            require(values.keys == setOf("v", "host", "port", "challenge", "expires", "name")) {
+                "Missing or unexpected QR fields"
             }
             require(values["v"] == "1") { "Unsupported Knix QR version" }
             val ticket = QuickConnectTicket(
@@ -68,7 +77,7 @@ data class QuickConnectTicket(
                 expiresAtEpochSeconds = values["expires"]?.toLongOrNull() ?: error("Invalid expiry"),
                 deviceName = values["name"] ?: error("Missing device name")
             )
-            ticket.encode() // validates all fields
+            ticket.encode()
             require(!ticket.isExpired(nowEpochSeconds)) { "This Knix QR has expired" }
             require(ticket.expiresAtEpochSeconds - nowEpochSeconds <= 300) { "QR expiry is outside the allowed window" }
             return ticket

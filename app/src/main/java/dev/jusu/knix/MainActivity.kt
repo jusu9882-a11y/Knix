@@ -51,6 +51,7 @@ import dev.jusu.knix.discovery.DiscoveredPeer
 import dev.jusu.knix.discovery.KnixDiscovery
 import dev.jusu.knix.quickconnect.QuickConnectQr
 import dev.jusu.knix.quickconnect.QuickConnectTicket
+import dev.jusu.knix.transfer.KnixTransferForegroundService
 import dev.jusu.knix.transfer.KnixRendezvousServer
 import dev.jusu.knix.transfer.KnixSecurePairing
 import dev.jusu.knix.transfer.KnixEncryptedTransfer
@@ -413,6 +414,7 @@ class MainActivity : ComponentActivity() {
         if (uris.size > 50) { status.value = "A batch can contain at most 50 files"; key.fill(0); return }
         queuedUris.clear()
         status.value = "Preparing ${uris.size} file(s)…"
+        KnixTransferForegroundService.start(this, "Preparing ${uris.size} file(s)")
         transferExecutor.execute {
             val temporaryFiles = mutableListOf<File>()
             try {
@@ -428,12 +430,14 @@ class MainActivity : ComponentActivity() {
                 val results = KnixEncryptedTransfer.sendFiles(socket, key, sources) { fileIndex, fileCount, progress ->
                     runOnUiThread {
                         transferProgress.value = "File $fileIndex of $fileCount • ${progress.transferred} / ${progress.total} bytes"
+                        KnixTransferForegroundService.update(this@MainActivity, "Sending file $fileIndex of $fileCount")
                     }
                 }
                 results.forEachIndexed { index, result ->
                     recordHistory(sources[index].second, "Sent", result.bytes, result.sha256)
                 }
                 runOnUiThread {
+                    KnixTransferForegroundService.stop(this@MainActivity)
                     status.value = "Batch complete: ${results.size} file(s) sent and verified."
                     transferProgress.value = ""
                     closePairedConnection()
@@ -441,6 +445,7 @@ class MainActivity : ComponentActivity() {
             } catch (e: Exception) {
                 try { socket.close() } catch (_: Exception) { }
                 runOnUiThread {
+                    KnixTransferForegroundService.stop(this@MainActivity)
                     closePairedConnection()
                     status.value = "Batch stopped: ${e.message ?: "connection error"}. Reconnect and select the remaining files again."
                     transferProgress.value = ""
@@ -475,6 +480,7 @@ class MainActivity : ComponentActivity() {
 
     private fun startQuickConnect() {
         if (rendezvous != null) return
+        KnixTransferForegroundService.start(this, "Waiting for a nearby Knix sender")
         closePairedConnection()
         val server = KnixRendezvousServer(
             onReady = { ticket ->
@@ -506,7 +512,8 @@ class MainActivity : ComponentActivity() {
                     }
                     runOnUiThread {
                         incomingRequest.value = false
-                        status.value = "Transfer approved. Receiving encrypted file…"
+                        status.value = "Transfer approved. Receiving encrypted files…"
+                        KnixTransferForegroundService.update(this@MainActivity, "Receiving encrypted files")
                     }
                     val results = KnixEncryptedTransfer.receiveFiles(socket, transferKey, folder) { fileIndex, fileCount, progress ->
                         runOnUiThread {
@@ -515,6 +522,7 @@ class MainActivity : ComponentActivity() {
                     }
                     results.forEach { result -> recordHistory(result.file.name, "Received", result.bytes, result.sha256) }
                     runOnUiThread {
+                        KnixTransferForegroundService.stop(this@MainActivity)
                         status.value = "Received ${results.size} file(s). All SHA-256 checks passed. Saved in: ${folder.absolutePath}"
                         transferProgress.value = ""
                         closePairedConnection()
@@ -525,6 +533,7 @@ class MainActivity : ComponentActivity() {
                     pairedSessionKey = null
                     pairedSocket = null
                     runOnUiThread {
+                        KnixTransferForegroundService.stop(this@MainActivity)
                         status.value = "Receive failed: ${e.message ?: "connection error"}. Partial data is kept for resume."
                         transferProgress.value = ""
                     }
@@ -551,6 +560,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun stopQuickConnect() {
+        KnixTransferForegroundService.stop(this)
         pendingApprovalChoice?.set(false)
         pendingApproval?.countDown()
         incomingRequest.value = false

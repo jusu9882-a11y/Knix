@@ -17,7 +17,8 @@ class KnixRendezvousServer(
     private val onReady: (QuickConnectTicket) -> Unit,
     private val onStatus: (String) -> Unit,
     private val onPaired: (Socket, KnixSecurePairing.Result) -> Unit = { _, _ -> },
-    private val port: Int = 0
+    private val port: Int = 0,
+    private val preferredHost: String? = null
 ) {
     private val running = AtomicBoolean(false)
     private val executor = Executors.newSingleThreadExecutor()
@@ -31,8 +32,8 @@ class KnixRendezvousServer(
                 val listener = ServerSocket(port, 8)
                 listener.soTimeout = 1000
                 server = listener
-                val host = findLocalIpv4()
-                    ?: throw IllegalStateException("Connect to a Wi-Fi network or hotspot before creating a QR code")
+                val host = preferredHost ?: findLocalIpv4()
+                    ?: throw IllegalStateException("Connect to Wi-Fi or establish a Wi-Fi Direct group before creating a QR code")
                 val ticket = QuickConnectTicket.create(host, listener.localPort, deviceName)
                 onReady(ticket)
                 onStatus("Secure pairing QR is ready. It expires in about two minutes.")

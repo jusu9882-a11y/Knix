@@ -61,7 +61,7 @@ Android 13+ requests Nearby Wi-Fi and Nearby Devices permissions. Android 12 and
 - Bluetooth is not used to transfer file contents. Transfers over long distances without internet or another network relay are not possible with the current local-network design.
 - The foreground service keeps the app process at foreground-service priority during user-started sessions, but the socket/session is still orchestrated by the activity and receiver rendezvous worker. Process-death recovery, boot recovery, a persistent transfer database, and true service-owned socket execution are not complete.
 - Pause/resume controls are not implemented. Cancellation closes the current connection; partial receive data can be resumed by reconnecting and reselecting the same batch in the same order.
-- Transfers currently use one TCP stream and fixed 1 MiB chunks. Parallel streams, adaptive chunk sizing, Wi-Fi Direct transport integration, and speed benchmarks remain future work.
+- Transfers currently use one TCP stream and fixed 1 MiB chunks. Parallel streams, adaptive chunk sizing, and speed benchmarks remain future work.
 - Files are stored in Knix's app-specific Downloads directory, not the public shared Downloads directory.
 - CI verifies protocol tests and Android compilation/package creation. Real two-device hardware testing is still required for camera scanner behavior, local IP selection, Android/OEM network restrictions, interrupted-transfer recovery, and actual throughput. No claim that Knix is faster than Xender is made until repeatable phone-to-phone benchmarks support it.
 - NSD publication remains optional and is only enabled when a real TCP listener port is supplied.

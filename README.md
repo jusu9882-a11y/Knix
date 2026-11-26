@@ -10,9 +10,11 @@ The Android Kotlin + Jetpack Compose scaffold includes:
 - Optional NSD service publication, enabled only when the TCP listener's active port is supplied.
 - Bluetooth LE presence advertising and scanning using a Knix service UUID.
 - Runtime permission requests and a basic nearby-device discovery screen.
-- Android CI workflow for debug APK builds.
+- A versioned `knix://connect` QR ticket model with strict field validation, short expiry (15–300 seconds), a cryptographically random one-time challenge, and offline QR bitmap generation using ZXing.
 
-Discovery is not a connection or trust decision. A discovered peer must complete the authenticated KNIX handshake before receiving file data. Bluetooth LE is used for presence discovery, not bulk file transfer. The current screen displays discovered peers; it does not yet connect to them or transfer files.
+A QR ticket is an introduction to a live receiver endpoint, not a transfer channel. It must only be generated after a real TCP listener has bound to a reachable address and port. The ticket does not contain a private key; scanning must be followed by an authenticated handshake and explicit peer approval. Expired, oversized, malformed, or unsupported-version tickets are rejected.
+
+Discovery is not a connection or trust decision. A discovered peer must complete the authenticated KNIX handshake before receiving file data. Bluetooth LE is used for presence discovery, not bulk file transfer. The current screen displays discovered peers; QR scanning/display is not yet wired into the screen, and there is not yet a TCP listener or file transfer flow.
 
 ## Offline networking note
 
@@ -35,5 +37,6 @@ Android 13+ requests Nearby Wi-Fi and Nearby Devices permissions. Android 12 and
 ## Current limitations
 
 - Discovery is implemented, but peer connection and transfer orchestration are not yet wired to the screen.
+- QR ticket parsing and generation primitives are implemented; camera scanning and the display flow await a real listening endpoint.
 - NSD publication is disabled unless a running TCP listener port is supplied.
 - No real two-device test or Android build result is claimed until CI completes and hardware testing is performed.

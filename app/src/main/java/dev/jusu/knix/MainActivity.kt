@@ -46,6 +46,9 @@ import dev.jusu.knix.transfer.KnixRendezvousServer
 import dev.jusu.knix.transfer.KnixSecurePairing
 import dev.jusu.knix.transfer.KnixEncryptedTransfer
 import java.util.concurrent.Executors
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : ComponentActivity() {
     private val peers = mutableStateListOf<DiscoveredPeer>()
@@ -53,6 +56,10 @@ class MainActivity : ComponentActivity() {
     private val qrBitmap = mutableStateOf<Bitmap?>(null)
     private val qrExpiry = mutableStateOf("")
     private val transferProgress = mutableStateOf("")
+    private val incomingRequest = mutableStateOf(false)
+    private val incomingFingerprint = mutableStateOf("")
+    private var pendingApproval: CountDownLatch? = null
+    private var pendingApprovalChoice: AtomicBoolean? = null
     private var discovery: KnixDiscovery? = null
     private var rendezvous: KnixRendezvousServer? = null
     private var pairedSessionKey: ByteArray? = null
@@ -105,6 +112,26 @@ class MainActivity : ComponentActivity() {
                                     Image(bitmap.asImageBitmap(), "Temporary Knix quick connect QR code",
                                         Modifier.fillMaxWidth().padding(horizontal = 12.dp))
                                     Text(qrExpiry.value, style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
+                        if (incomingRequest.value) {
+                            Card(Modifier.fillMaxWidth()) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text("Incoming transfer request", style = MaterialTheme.typography.titleMedium)
+                                    Text("Compare this fingerprint with the sender before accepting: ${incomingFingerprint.value}")
+                                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        Button(onClick = {
+                                            pendingApprovalChoice?.set(true)
+                                            pendingApproval?.countDown()
+                                            incomingRequest.value = false
+                                        }) { Text("Accept") }
+                                        OutlinedButton(onClick = {
+                                            pendingApprovalChoice?.set(false)
+                                            pendingApproval?.countDown()
+                                            incomingRequest.value = false
+                                        }) { Text("Reject") }
+                                    }
                                 }
                             }
                         }
@@ -264,11 +291,24 @@ class MainActivity : ComponentActivity() {
                 pairedSessionKey = transferKey.copyOf()
                 paired.sessionKey.fill(0)
                 pairedSocket = socket
+                val approval = CountDownLatch(1)
+                val approved = AtomicBoolean(false)
+                pendingApproval = approval
+                pendingApprovalChoice = approved
                 runOnUiThread {
-                    status.value = "Securely connected. Waiting for the sender to choose a file. Fingerprint: ${paired.peerFingerprint}"
+                    incomingFingerprint.value = paired.peerFingerprint
+                    incomingRequest.value = true
+                    status.value = "A nearby sender is requesting permission to transfer a file."
                 }
                 val folder = File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: filesDir, "Knix Received")
                 try {
+                    if (!approval.await(60, TimeUnit.SECONDS) || !approved.get()) {
+                        throw SecurityException("Incoming transfer was not approved")
+                    }
+                    runOnUiThread {
+                        incomingRequest.value = false
+                        status.value = "Transfer approved. Receiving encrypted file…"
+                    }
                     val result = KnixEncryptedTransfer.receiveFile(socket, transferKey, folder) { progress ->
                         runOnUiThread { transferProgress.value = "${progress.transferred} / ${progress.total} bytes" }
                     }
@@ -288,6 +328,9 @@ class MainActivity : ComponentActivity() {
                     }
                 } finally {
                     transferKey.fill(0)
+                    pendingApproval = null
+                    pendingApprovalChoice = null
+                    runOnUiThread { incomingRequest.value = false }
                 }
             }
         )
@@ -306,6 +349,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun stopQuickConnect() {
+        pendingApprovalChoice?.set(false)
+        pendingApproval?.countDown()
+        incomingRequest.value = false
         rendezvous?.stop()
         rendezvous = null
         closePairedConnection()

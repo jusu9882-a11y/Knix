@@ -489,7 +489,12 @@ class MainActivity : ComponentActivity() {
                     qrExpiry.value = "Expires at ${ticket.expiresAtEpochSeconds}. Keep both phones on the same Wi-Fi or hotspot."
                 }
             },
-            onStatus = { message -> runOnUiThread { status.value = message } },
+            onStatus = { message -> runOnUiThread {
+                status.value = message
+                if (message.contains("expired", ignoreCase = true) || message.contains("could not start", ignoreCase = true)) {
+                    KnixTransferForegroundService.stop(this@MainActivity)
+                }
+            } },
             onPaired = { socket, paired ->
                 socket.soTimeout = 0
                 val transferKey = paired.sessionKey.copyOf()
@@ -518,6 +523,7 @@ class MainActivity : ComponentActivity() {
                     val results = KnixEncryptedTransfer.receiveFiles(socket, transferKey, folder) { fileIndex, fileCount, progress ->
                         runOnUiThread {
                             transferProgress.value = "File $fileIndex of $fileCount • ${progress.transferred} / ${progress.total} bytes"
+                            KnixTransferForegroundService.update(this@MainActivity, "Receiving file $fileIndex of $fileCount")
                         }
                     }
                     results.forEach { result -> recordHistory(result.file.name, "Received", result.bytes, result.sha256) }
@@ -548,6 +554,7 @@ class MainActivity : ComponentActivity() {
         rendezvous = server
         if (!server.start(Build.MODEL ?: "Android device")) {
             rendezvous = null
+            KnixTransferForegroundService.stop(this)
             status.value = "Could not start Quick Connect"
         } else status.value = "Starting local receiver…"
     }

@@ -99,11 +99,15 @@ object KnixEncryptedTransfer {
         socket: Socket,
         sessionKey: ByteArray,
         source: File,
+        displayName: String = source.name,
         onProgress: (Progress) -> Unit = {}
     ): Result {
         require(sessionKey.size == 32) { "A 256-bit session key is required" }
         require(source.isFile && source.canRead()) { "Selected file cannot be read" }
-        require(source.name.toByteArray(StandardCharsets.UTF_8).size <= 240) { "File name is too long" }
+        require(displayName.isNotBlank() && displayName.toByteArray(StandardCharsets.UTF_8).size <= 240 &&
+            File(displayName).name == displayName && !displayName.contains('/') && !displayName.contains('\\\\')) {
+            "Invalid or overlong file name"
+        }
         val total = source.length()
         val fullDigest = digest(source)
         val channel = SecureChannel(socket, sessionKey, 0)
@@ -118,7 +122,7 @@ object KnixEncryptedTransfer {
         val name = source.name.toByteArray(StandardCharsets.UTF_8)
         val meta = java.io.ByteArrayOutputStream().also { bytes ->
             DataOutputStream(bytes).use { out ->
-                out.writeUTF(source.name)
+                out.writeUTF(displayName)
                 out.writeLong(total)
                 out.writeLong(offset)
                 out.write(fullDigest)
@@ -159,12 +163,11 @@ object KnixEncryptedTransfer {
         require(sessionKey.size == 32) { "A 256-bit session key is required" }
         require(destinationDirectory.exists() || destinationDirectory.mkdirs()) { "Cannot create destination directory" }
         require(destinationDirectory.isDirectory) { "Destination is not a directory" }
-        val partial: File
-        var destination: File
-        require(!destination.exists()) { "Destination already exists" }
+        val partial = File(destinationDirectory, ".knix.pending.part")
         require(!partial.exists() || partial.isFile) { "Partial destination is invalid" }
         val offset = if (partial.exists()) partial.length() else 0L
         val prefixDigest = digest(partial.takeIf { it.exists() })
+        var destination: File
         val channel = SecureChannel(socket, sessionKey, 1)
         val ready = java.io.ByteArrayOutputStream().also { bytes ->
             DataOutputStream(bytes).use { out -> out.writeLong(offset); out.write(prefixDigest) }
@@ -180,8 +183,6 @@ object KnixEncryptedTransfer {
         require(File(name).name == name && !name.contains('/') && !name.contains('\\\\')) { "Unsafe file name" }
         destination = File(destinationDirectory, name)
         require(!destination.exists()) { "A file with this name already exists in the receive folder" }
-        partial = File(destinationDirectory, name + ".knix.part")
-        require(!partial.exists() || partial.isFile) { "Partial destination is invalid" }
         require(total >= 0 && senderOffset == offset && offset <= total) { "Invalid transfer size or resume offset" }
         require(MessageDigest.isEqual(prefixDigest, expectedPrefix)) { "Partial file digest mismatch" }
 

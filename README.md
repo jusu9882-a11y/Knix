@@ -16,7 +16,7 @@ The Android Kotlin + Jetpack Compose app currently includes:
 - A short peer-key fingerprint shown after pairing. The handshake rejects mismatched QR challenges and bounds all handshake messages.
 - AES-256-GCM authenticated record framing with independent directional nonces, strict frame bounds, and monotonically increasing per-direction sequence numbers.
 - Encrypted 1 MiB chunked file transfer, source filename preservation, resume from a persisted partial file after reconnect, prefix-digest matching before resume, and end-to-end SHA-256 verification before the receiver commits the file.
-- A working QR-driven send/receive flow: the sender selects a file through Android's document picker; the receiver stores verified files in the app-specific Downloads/Knix Received folder.
+- A working QR-driven single-file send/receive flow: the sender selects a file through Android's document picker; the receiver compares the peer fingerprint and explicitly accepts or rejects the transfer; verified files are stored in the app-specific Downloads/Knix Received folder.
 
 A QR ticket is an introduction to a live receiver endpoint, not a transfer channel. It must only be generated after a real TCP listener has bound to a reachable address and port. The ticket does not contain a private key; scanning must be followed by an authenticated handshake and explicit peer approval. Expired, oversized, malformed, or unsupported-version tickets are rejected.
 
@@ -28,11 +28,23 @@ Discovery is not a connection or trust decision. Bluetooth LE is used for presen
 
 Knix does not require cloud services, accounts, analytics, or internet access. Android's INTERNET permission is declared because local TCP sockets use the Android networking stack; it does not mean Knix uploads files to the internet.
 
-## Build
+## Quick start
 
-The GitHub Actions workflow installs Gradle 8.9 and Android SDK 35, then runs:
+1. Connect both phones to the same Wi-Fi network or one phone's hotspot. Mobile data is not used for the transfer.
+2. On the receiving phone, open Knix and tap **Receive**. Keep the QR code visible.
+3. On the sending phone, tap **Scan QR** and scan the receiver's code.
+4. Compare the peer fingerprint on both phones. The receiving phone must tap **Accept** before any file data is received.
+5. On the sending phone, tap **Choose file to send** and select one file.
+6. The receiving phone verifies SHA-256 before committing the file to its app-specific Downloads/Knix Received folder. The app displays the exact folder path when complete.
+
+A transfer uses one fresh QR pairing and one file. If a transfer is interrupted, create a new QR code and select the same source file again; the receiver checks the saved partial-file prefix before resuming. To cancel, tap **Close connection** on the receiving phone.
+
+## Build and automated checks
+
+The GitHub Actions workflow installs Gradle 8.9 and Android SDK 35, runs JVM unit/protocol tests, builds the debug APK, and uploads it as an Actions artifact:
 
 ```bash
+gradle --no-daemon :app:testDebugUnitTest
 gradle --no-daemon :app:assembleDebug
 ```
 
@@ -44,7 +56,9 @@ Android 13+ requests Nearby Wi-Fi and Nearby Devices permissions. Android 12 and
 
 ## Current limitations
 
-- Discovery is implemented, but peer connection and transfer orchestration are not yet wired to the screen.
-- QR receive display, camera scanning, a short-lived ticket, one-time TCP listener, authenticated ephemeral key agreement, encrypted file framing, chunked file transfer, resume negotiation, and SHA-256 verification are implemented. Hardware interoperability and throughput still require real two-device testing.
-- NSD publication is disabled unless a running TCP listener port is supplied.
-- CI builds and JVM protocol tests are the automated verification gate. A real two-device test is still required to validate Android camera scanning, local IP selection, OEM Wi-Fi behavior, and measured transfer throughput.
+- The working transfer path is QR + local TCP over the same Wi-Fi/hotspot. Wi-Fi Direct, NSD, and Bluetooth LE currently provide discovery/presence only; they are not yet alternate bulk-transfer paths.
+- Bluetooth is not used to transfer file contents. Transfers over long distances without internet or another network relay are not possible with the current local-network design.
+- One file is sent per QR pairing. Multi-file queues, 4–8 parallel data streams, adaptive chunk sizing, and transfer-speed benchmarking remain future work.
+- Files are stored in Knix's app-specific Downloads directory, not the public shared Downloads directory.
+- CI verifies protocol tests and Android compilation/package creation. Real two-device hardware testing is still required for camera scanner behavior, local IP selection, Android/OEM network restrictions, interrupted-transfer recovery, and actual throughput. No claim that Knix is faster than Xender is made until repeatable phone-to-phone benchmarks support it.
+- NSD publication remains optional and is only enabled when a real TCP listener port is supplied.

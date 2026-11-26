@@ -260,7 +260,8 @@ class MainActivity : ComponentActivity() {
             onStatus = { message -> runOnUiThread { status.value = message } },
             onPaired = { socket, paired ->
                 socket.soTimeout = 0
-                pairedSessionKey = paired.sessionKey.copyOf()
+                val transferKey = paired.sessionKey.copyOf()
+                pairedSessionKey = transferKey.copyOf()
                 paired.sessionKey.fill(0)
                 pairedSocket = socket
                 runOnUiThread {
@@ -268,7 +269,7 @@ class MainActivity : ComponentActivity() {
                 }
                 val folder = File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: filesDir, "Knix Received")
                 try {
-                    val result = KnixEncryptedTransfer.receiveFile(socket, paired.sessionKey, folder) { progress ->
+                    val result = KnixEncryptedTransfer.receiveFile(socket, transferKey, folder) { progress ->
                         runOnUiThread { transferProgress.value = "${progress.transferred} / ${progress.total} bytes" }
                     }
                     runOnUiThread {
@@ -285,6 +286,8 @@ class MainActivity : ComponentActivity() {
                         status.value = "Receive failed: ${e.message ?: "connection error"}. Partial data is kept for resume."
                         transferProgress.value = ""
                     }
+                } finally {
+                    transferKey.fill(0)
                 }
             }
         )

@@ -7,7 +7,6 @@ import android.os.Build
 import android.os.Bundle
 import android.app.Activity
 import android.net.Uri
-import android.content.Intent
 import android.provider.OpenableColumns
 import android.os.Environment
 import com.google.zxing.integration.android.IntentIntegrator
@@ -58,7 +57,6 @@ class MainActivity : ComponentActivity() {
     private var rendezvous: KnixRendezvousServer? = null
     private var pairedSessionKey: ByteArray? = null
     private var pairedSocket: Socket? = null
-    private var isReceiver = false
     private val transferExecutor = Executors.newSingleThreadExecutor()
 
     private val openFileLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -201,7 +199,7 @@ class MainActivity : ComponentActivity() {
                     closePairedConnection()
                     pairedSocket = socket
                     pairedSessionKey = paired.sessionKey.copyOf()
-                    isReceiver = false
+                    paired.sessionKey.fill(0)
                     status.value = "Securely connected to " + ticket.deviceName +
                         ". Fingerprint: " + paired.peerFingerprint + ". Choose a file to send."
                 }
@@ -263,8 +261,8 @@ class MainActivity : ComponentActivity() {
             onPaired = { socket, paired ->
                 socket.soTimeout = 0
                 pairedSessionKey = paired.sessionKey.copyOf()
+                paired.sessionKey.fill(0)
                 pairedSocket = socket
-                isReceiver = true
                 runOnUiThread {
                     status.value = "Securely connected. Waiting for the sender to choose a file. Fingerprint: ${paired.peerFingerprint}"
                 }
@@ -302,7 +300,6 @@ class MainActivity : ComponentActivity() {
         pairedSocket = null
         pairedSessionKey?.fill(0)
         pairedSessionKey = null
-        isReceiver = false
     }
 
     private fun stopQuickConnect() {

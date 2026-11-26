@@ -45,6 +45,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import dev.jusu.knix.data.TransferHistoryEntry
+import dev.jusu.knix.data.TransferHistoryStore
 import dev.jusu.knix.discovery.DiscoveredPeer
 import dev.jusu.knix.discovery.KnixDiscovery
 import dev.jusu.knix.quickconnect.QuickConnectQr
@@ -52,6 +54,8 @@ import dev.jusu.knix.quickconnect.QuickConnectTicket
 import dev.jusu.knix.transfer.KnixRendezvousServer
 import dev.jusu.knix.transfer.KnixSecurePairing
 import dev.jusu.knix.transfer.KnixEncryptedTransfer
+import java.text.DateFormat
+import java.util.Date
 import java.util.concurrent.Executors
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -59,6 +63,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : ComponentActivity() {
     private val peers = mutableStateListOf<DiscoveredPeer>()
+    private val history = mutableStateListOf<TransferHistoryEntry>()
+    private lateinit var historyStore: TransferHistoryStore
     private val selectedTab = mutableStateOf("Home")
     private val status = mutableStateOf("Ready to discover nearby devices")
     private val qrBitmap = mutableStateOf<Bitmap?>(null)
@@ -95,6 +101,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        historyStore = TransferHistoryStore(applicationContext)
+        history.addAll(historyStore.read())
         setContent {
             MaterialTheme(
                 colorScheme = lightColorScheme(
@@ -279,7 +287,27 @@ class MainActivity : ComponentActivity() {
                                         }
                                     }
                                 }
-                                Text("Completed-transfer history is not persisted in this version.", style = MaterialTheme.typography.bodySmall)
+                                Text("Recent transfers", style = MaterialTheme.typography.titleMedium)
+                                if (history.isEmpty()) {
+                                    Text("Completed transfers will appear here and remain on this phone.", style = MaterialTheme.typography.bodySmall)
+                                } else {
+                                    history.forEach { entry ->
+                                        Card(Modifier.fillMaxWidth()) {
+                                            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                                    Text("${entry.direction} • ${entry.fileName}", style = MaterialTheme.typography.titleSmall)
+                                                    Text(entry.outcome, style = MaterialTheme.typography.labelSmall, color = Color(0xFF568000))
+                                                }
+                                                Text("${formatBytes(entry.bytes)} • ${DateFormat.getDateTimeInstance().format(Date(entry.timestamp))}", style = MaterialTheme.typography.bodySmall)
+                                                if (entry.sha256.isNotBlank()) Text("SHA-256: ${entry.sha256}", style = MaterialTheme.typography.labelSmall)
+                                            }
+                                        }
+                                    }
+                                    OutlinedButton(onClick = {
+                                        historyStore.clear()
+                                        history.clear()
+                                    }) { Text("Clear history on this phone") }
+                                }
                                 OutlinedButton(onClick = ::stopQuickConnect) { Text("Close active connection") }
                             }
                         }
@@ -378,6 +406,7 @@ class MainActivity : ComponentActivity() {
                 val result = KnixEncryptedTransfer.sendFile(socket, key, temp, name) { progress ->
                     runOnUiThread { transferProgress.value = "${progress.transferred} / ${progress.total} bytes" }
                 }
+                recordHistory(name, "Sent", result.bytes, result.sha256)
                 runOnUiThread {
                     status.value = "Transfer complete. Sent ${result.bytes} bytes; SHA-256 verified by receiver."
                     transferProgress.value = ""
@@ -394,6 +423,22 @@ class MainActivity : ComponentActivity() {
                 temp?.delete()
             }
         }
+    }
+
+    private fun recordHistory(name: String, direction: String, bytes: Long, sha256: String) {
+        val entry = TransferHistoryEntry(name, direction, bytes, System.currentTimeMillis(), sha256, "Complete")
+        historyStore.append(entry)
+        runOnUiThread {
+            history.add(0, entry)
+            while (history.size > 100) history.removeAt(history.lastIndex)
+        }
+    }
+
+    private fun formatBytes(bytes: Long): String = when {
+        bytes < 1024 -> "$bytes B"
+        bytes < 1024L * 1024 -> String.format("%.1f KB", bytes / 1024.0)
+        bytes < 1024L * 1024 * 1024 -> String.format("%.1f MB", bytes / (1024.0 * 1024))
+        else -> String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024))
     }
 
     private fun queryDisplayName(uri: Uri): String? =
@@ -439,6 +484,7 @@ class MainActivity : ComponentActivity() {
                     val result = KnixEncryptedTransfer.receiveFile(socket, transferKey, folder) { progress ->
                         runOnUiThread { transferProgress.value = "${progress.transferred} / ${progress.total} bytes" }
                     }
+                    recordHistory(result.file.name, "Received", result.bytes, result.sha256)
                     runOnUiThread {
                         status.value = "Received ${result.file.name} (${result.bytes} bytes). SHA-256 verified. Saved in: ${folder.absolutePath}"
                         transferProgress.value = ""

@@ -24,12 +24,17 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.mutableStateListOf
@@ -52,6 +57,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : ComponentActivity() {
     private val peers = mutableStateListOf<DiscoveredPeer>()
+    private val selectedTab = mutableStateOf("Home")
     private val status = mutableStateOf("Ready to discover nearby devices")
     private val qrBitmap = mutableStateOf<Bitmap?>(null)
     private val qrExpiry = mutableStateOf("")
@@ -89,71 +95,159 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                        Text("Knix", style = MaterialTheme.typography.headlineLarge)
-                        Text("Offline sharing. Nearby, fast, private.", style = MaterialTheme.typography.bodyLarge)
-                        Text(status.value, style = MaterialTheme.typography.bodyMedium)
-                        if (transferProgress.value.isNotBlank()) Text(transferProgress.value, style = MaterialTheme.typography.bodySmall)
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Button(onClick = ::requestPermissionsAndStart) { Text("Find devices") }
-                            OutlinedButton(onClick = ::stopDiscovery) { Text("Stop scan") }
-                        }
-                        Card(Modifier.fillMaxWidth()) {
-                            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Text("QR Quick Connect", style = MaterialTheme.typography.titleMedium)
-                                Text("Create a temporary receive code or scan another Knix phone. Both phones must be on the same Wi-Fi or hotspot.")
-                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    Button(onClick = ::startQuickConnect) { Text("Receive") }
-                                    OutlinedButton(onClick = ::scanQuickConnect) { Text("Scan QR") }
-                                }
-                                OutlinedButton(onClick = ::stopQuickConnect) { Text("Close connection") }
-                                qrBitmap.value?.let { bitmap ->
-                                    Image(bitmap.asImageBitmap(), "Temporary Knix quick connect QR code",
-                                        Modifier.fillMaxWidth().padding(horizontal = 12.dp))
-                                    Text(qrExpiry.value, style = MaterialTheme.typography.bodySmall)
-                                }
+                Scaffold(
+                    bottomBar = {
+                        NavigationBar {
+                            listOf("Home", "Send", "Receive", "Devices", "Activity").forEach { tab ->
+                                NavigationBarItem(
+                                    selected = selectedTab.value == tab,
+                                    onClick = { selectedTab.value = tab },
+                                    icon = {},
+                                    label = { Text(tab) }
+                                )
                             }
                         }
-                        if (incomingRequest.value) {
-                            Card(Modifier.fillMaxWidth()) {
-                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text("Incoming transfer request", style = MaterialTheme.typography.titleMedium)
-                                    Text("Compare this fingerprint with the sender before accepting: ${incomingFingerprint.value}")
-                                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                        Button(onClick = {
-                                            pendingApprovalChoice?.set(true)
-                                            pendingApproval?.countDown()
-                                            incomingRequest.value = false
-                                        }) { Text("Accept") }
-                                        OutlinedButton(onClick = {
-                                            pendingApprovalChoice?.set(false)
-                                            pendingApproval?.countDown()
-                                            incomingRequest.value = false
-                                        }) { Text("Reject") }
-                                    }
-                                }
-                            }
-                        }
-                        Card(Modifier.fillMaxWidth()) {
-                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text("Send files", style = MaterialTheme.typography.titleMedium)
-                                Button(onClick = { openFileLauncher.launch(arrayOf("*/*")) }) {
-                                    Text("Choose file to send")
-                                }
-                            }
-                        }
-                        Text("Nearby devices", style = MaterialTheme.typography.titleMedium)
-                        if (peers.isEmpty()) Text("No Knix devices found yet. Keep this screen open while scanning.")
-                        else LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(peers, key = { it.id }) { peer ->
+                    }
+                ) { innerPadding ->
+                    Column(
+                        Modifier.fillMaxSize().padding(innerPadding)
+                            .verticalScroll(rememberScrollState()).padding(20.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Text("KNIX", style = MaterialTheme.typography.headlineMedium)
+                        Text("Offline sharing. Nearby, fast, private.", style = MaterialTheme.typography.bodyMedium)
+                        when (selectedTab.value) {
+                            "Home" -> {
+                                Text("Your sharing space", style = MaterialTheme.typography.titleLarge)
                                 Card(Modifier.fillMaxWidth()) {
-                                    Column(Modifier.padding(12.dp)) {
-                                        Text(peer.name, style = MaterialTheme.typography.titleSmall)
-                                        Text(peer.transport.name.replace('_', ' '), style = MaterialTheme.typography.bodySmall)
-                                        Text(peer.address ?: "Address available after network connection", style = MaterialTheme.typography.bodySmall)
+                                    Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        Text("Ready to share?", style = MaterialTheme.typography.titleMedium)
+                                        Text("Send files directly between nearby phones. No cloud account or internet upload.")
+                                        Text(status.value, style = MaterialTheme.typography.bodySmall)
+                                        if (transferProgress.value.isNotBlank()) Text(transferProgress.value)
+                                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                            Button(onClick = { selectedTab.value = "Send" }) { Text("Send files") }
+                                            OutlinedButton(onClick = { selectedTab.value = "Receive" }) { Text("Receive") }
+                                        }
                                     }
                                 }
+                                Card(Modifier.fillMaxWidth()) {
+                                    Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Text("Nearby devices", style = MaterialTheme.typography.titleMedium)
+                                        Text(if (peers.isEmpty()) "No devices discovered yet." else "${peers.size} device(s) discovered")
+                                        OutlinedButton(onClick = { selectedTab.value = "Devices" }) { Text("View devices") }
+                                    }
+                                }
+                                if (incomingRequest.value) {
+                                    Card(Modifier.fillMaxWidth()) {
+                                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            Text("Incoming transfer request", style = MaterialTheme.typography.titleMedium)
+                                            Text("Compare this fingerprint with the sender before accepting: ${incomingFingerprint.value}")
+                                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                                Button(onClick = {
+                                                    pendingApprovalChoice?.set(true)
+                                                    pendingApproval?.countDown()
+                                                    incomingRequest.value = false
+                                                }) { Text("Accept") }
+                                                OutlinedButton(onClick = {
+                                                    pendingApprovalChoice?.set(false)
+                                                    pendingApproval?.countDown()
+                                                    incomingRequest.value = false
+                                                }) { Text("Reject") }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            "Send" -> {
+                                Text("Send files", style = MaterialTheme.typography.titleLarge)
+                                Text("Connect to another Knix phone, then choose a file to send.")
+                                Card(Modifier.fillMaxWidth()) {
+                                    Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        Text("1. Connect to receiver", style = MaterialTheme.typography.titleMedium)
+                                        Text(if (pairedSocket != null) "Secure connection established." else "Scan the receiver's temporary QR code. Both phones must use the same Wi-Fi or hotspot.")
+                                        Button(onClick = ::scanQuickConnect) { Text("Scan receiver QR") }
+                                        Text("2. Select a file", style = MaterialTheme.typography.titleMedium)
+                                        Button(onClick = { openFileLauncher.launch(arrayOf("*/*")) }, enabled = pairedSocket != null) {
+                                            Text("Choose file to send")
+                                        }
+                                        Text(status.value, style = MaterialTheme.typography.bodySmall)
+                                        if (transferProgress.value.isNotBlank()) Text(transferProgress.value)
+                                    }
+                                }
+                            }
+                            "Receive" -> {
+                                Text("Receive files", style = MaterialTheme.typography.titleLarge)
+                                Text("Create a one-time QR code and approve incoming transfers.")
+                                Card(Modifier.fillMaxWidth()) {
+                                    Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        Button(onClick = ::startQuickConnect) { Text("Create receive QR") }
+                                        qrBitmap.value?.let { bitmap ->
+                                            Image(bitmap.asImageBitmap(), "Temporary Knix quick connect QR code",
+                                                Modifier.fillMaxWidth().padding(horizontal = 12.dp))
+                                            Text(qrExpiry.value, style = MaterialTheme.typography.bodySmall)
+                                        }
+                                        if (incomingRequest.value) {
+                                            Text("Incoming transfer request", style = MaterialTheme.typography.titleMedium)
+                                            Text("Sender fingerprint: ${incomingFingerprint.value}")
+                                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                                Button(onClick = {
+                                                    pendingApprovalChoice?.set(true)
+                                                    pendingApproval?.countDown()
+                                                    incomingRequest.value = false
+                                                }) { Text("Accept") }
+                                                OutlinedButton(onClick = {
+                                                    pendingApprovalChoice?.set(false)
+                                                    pendingApproval?.countDown()
+                                                    incomingRequest.value = false
+                                                }) { Text("Reject") }
+                                            }
+                                        }
+                                        OutlinedButton(onClick = ::stopQuickConnect) { Text("Close receiver") }
+                                        Text(status.value, style = MaterialTheme.typography.bodySmall)
+                                    }
+                                }
+                            }
+                            "Devices" -> {
+                                Text("Nearby devices", style = MaterialTheme.typography.titleLarge)
+                                Text("Discover Knix phones on the local network and nearby radios.")
+                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Button(onClick = ::requestPermissionsAndStart) { Text("Find devices") }
+                                    OutlinedButton(onClick = ::stopDiscovery) { Text("Stop scan") }
+                                }
+                                Text(status.value, style = MaterialTheme.typography.bodySmall)
+                                if (peers.isEmpty()) {
+                                    Card(Modifier.fillMaxWidth()) {
+                                        Text("No Knix devices found yet. Start scanning and keep both phones nearby or on the same Wi-Fi.", Modifier.padding(16.dp))
+                                    }
+                                } else {
+                                    peers.forEach { peer ->
+                                        Card(Modifier.fillMaxWidth()) {
+                                            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                Text(peer.name, style = MaterialTheme.typography.titleMedium)
+                                                Text(peer.transport.name.replace('_', ' '), style = MaterialTheme.typography.bodySmall)
+                                                Text(peer.address ?: "Address available after network connection", style = MaterialTheme.typography.bodySmall)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            "Activity" -> {
+                                Text("Transfer activity", style = MaterialTheme.typography.titleLarge)
+                                Card(Modifier.fillMaxWidth()) {
+                                    Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Text("Current status", style = MaterialTheme.typography.titleMedium)
+                                        Text(status.value)
+                                        if (transferProgress.value.isNotBlank()) {
+                                            Text("Transfer progress", style = MaterialTheme.typography.titleSmall)
+                                            Text(transferProgress.value)
+                                        } else {
+                                            Text("No transfer is currently running.")
+                                        }
+                                    }
+                                }
+                                Text("Completed-transfer history is not persisted in this version.", style = MaterialTheme.typography.bodySmall)
+                                OutlinedButton(onClick = ::stopQuickConnect) { Text("Close active connection") }
                             }
                         }
                     }

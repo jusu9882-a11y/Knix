@@ -238,7 +238,7 @@ class MainActivity : ComponentActivity() {
                             }
                             "Receive" -> {
                                 Text("Receive files", style = MaterialTheme.typography.titleLarge)
-                                Text("Create a one-time QR code and approve incoming transfers.")
+                                Text(if (p2pLocalAddress != null) "Wi-Fi Direct link ready. Create a QR code to transfer over this direct connection." else "Create a one-time QR code. For Wi-Fi Direct, connect to a discovered peer first; otherwise use the same Wi-Fi or hotspot.")
                                 Card(Modifier.fillMaxWidth()) {
                                     Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                         Button(onClick = ::startQuickConnect) { Text("Create receive QR") }
@@ -275,6 +275,8 @@ class MainActivity : ComponentActivity() {
                                     Button(onClick = ::requestPermissionsAndStart) { Text("Find devices") }
                                     OutlinedButton(onClick = ::stopDiscovery) { Text("Stop scan") }
                                 }
+                                Text(p2pStatus.value, style = MaterialTheme.typography.bodySmall)
+                                OutlinedButton(onClick = ::disconnectWifiDirect) { Text("Disconnect Wi-Fi Direct") }
                                 Text(status.value, style = MaterialTheme.typography.bodySmall)
                                 if (peers.isEmpty()) {
                                     Card(Modifier.fillMaxWidth()) {
@@ -287,6 +289,9 @@ class MainActivity : ComponentActivity() {
                                                 Text(peer.name, style = MaterialTheme.typography.titleMedium)
                                                 Text(peer.transport.name.replace('_', ' '), style = MaterialTheme.typography.bodySmall)
                                                 Text(peer.address ?: "Address available after network connection", style = MaterialTheme.typography.bodySmall)
+                                                if (peer.transport == dev.jusu.knix.discovery.DiscoveryTransport.WIFI_DIRECT && !peer.address.isNullOrBlank()) {
+                                                    Button(onClick = { connectWifiDirect(peer) }) { Text("Connect with Wi-Fi Direct") }
+                                                }
                                             }
                                         }
                                     }

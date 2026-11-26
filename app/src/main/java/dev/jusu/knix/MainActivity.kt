@@ -51,7 +51,7 @@ class MainActivity : ComponentActivity() {
 
     private val qrScanLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
-            val raw = result.data?.getStringExtra(IntentIntegrator.EXTRA_RESULT_CONTENT)
+            val raw = result.data?.getStringExtra("SCAN_RESULT")
             if (raw.isNullOrBlank()) status.value = "No QR code was read" else connectFromQr(raw)
         } else status.value = "QR scan cancelled"
     }
@@ -88,7 +88,6 @@ class MainActivity : ComponentActivity() {
                                     OutlinedButton(onClick = ::scanQuickConnect) { Text("Scan QR") }
                                 }
                                 OutlinedButton(onClick = ::stopQuickConnect) { Text("Close QR / receiver") }
-                                }
                                 qrBitmap.value?.let { bitmap ->
                                     Image(bitmap.asImageBitmap(), "Temporary Knix quick connect QR code",
                                         Modifier.fillMaxWidth().padding(horizontal = 12.dp))

@@ -105,7 +105,7 @@ object KnixEncryptedTransfer {
         socket: Socket,
         sessionKey: ByteArray,
         sources: List<Pair<File, String>>,
-        onFileProgress: (Int, Int, Progress) -> Unit = {}
+        onFileProgress: (Int, Int, Progress) -> Unit = { _, _, _ -> }
     ): List<Result> {
         require(sources.isNotEmpty() && sources.size <= MAX_BATCH_FILES) { "Batch must contain 1-$MAX_BATCH_FILES files" }
         val output = DataOutputStream(socket.getOutputStream())

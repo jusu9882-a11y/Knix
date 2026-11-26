@@ -63,8 +63,15 @@ class KnixRendezvousServer(
 
     private fun handleHello(client: Socket, ticket: QuickConnectTicket) {
         client.soTimeout = 3000
-        val reader = BufferedReader(InputStreamReader(client.getInputStream(), StandardCharsets.US_ASCII))
-        val line = reader.readLine()?.take(256) ?: return
+        val input = client.getInputStream()
+        val lineBytes = java.io.ByteArrayOutputStream()
+        while (lineBytes.size() <= 160) {
+            val next = input.read()
+            if (next == -1 || next == 10) break
+            if (next != 13) lineBytes.write(next)
+        }
+        if (lineBytes.size() > 160) return
+        val line = lineBytes.toString(StandardCharsets.US_ASCII.name())
         if (line != "KNIX-HELLO/1 ${ticket.challenge}" || ticket.isExpired()) {
             client.getOutputStream().write("KNIX-REJECT/1\n".toByteArray(StandardCharsets.US_ASCII))
             return
@@ -88,6 +95,7 @@ class KnixRendezvousServer(
         return try {
             NetworkInterface.getNetworkInterfaces().toList()
                 .filter { it.isUp && !it.isLoopback }
+                .sortedBy { if (it.name.startsWith("wlan", ignoreCase = true) || it.name.startsWith("ap", ignoreCase = true)) 0 else 1 }
                 .flatMap { it.inetAddresses.toList() }
                 .filterIsInstance<Inet4Address>()
                 .firstOrNull { !it.isLoopbackAddress && !it.isLinkLocalAddress }

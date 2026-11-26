@@ -10,8 +10,8 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * One-time QR listener that completes authenticated ephemeral ECDH pairing.
- * It does not accept file payloads; encrypted transfer framing is a later stage.
+ * One-time QR listener that completes authenticated ephemeral ECDH pairing
+ * and hands the live socket to the encrypted file receiver.
  */
 class KnixRendezvousServer(
     private val onReady: (QuickConnectTicket) -> Unit,
@@ -22,6 +22,7 @@ class KnixRendezvousServer(
     private val running = AtomicBoolean(false)
     private val executor = Executors.newSingleThreadExecutor()
     @Volatile private var server: ServerSocket? = null
+    @Volatile private var activeClient: Socket? = null
 
     fun start(deviceName: String): Boolean {
         if (!running.compareAndSet(false, true)) return false
@@ -38,6 +39,7 @@ class KnixRendezvousServer(
                 while (running.get() && !ticket.isExpired()) {
                     try {
                         val client = listener.accept()
+                        activeClient = client
                         client.soTimeout = 8_000
                         try {
                             val paired = KnixSecurePairing.respond(client, ticket.challenge)
@@ -45,8 +47,10 @@ class KnixRendezvousServer(
                             onPaired(client, paired)
                             running.set(false)
                         } catch (e: Exception) {
-                            try { client.close() } catch (_: Exception) { }
                             onStatus("Pairing or transfer failed: ${e.message ?: "protocol error"}")
+                        } finally {
+                            try { client.close() } catch (_: Exception) { }
+                            activeClient = null
                         }
                     } catch (_: java.net.SocketTimeoutException) {
                         // Periodically check stop and ticket expiry.
@@ -66,6 +70,7 @@ class KnixRendezvousServer(
 
     fun stop() {
         running.set(false)
+        try { activeClient?.close() } catch (_: Exception) { }
         try { server?.close() } catch (_: Exception) { }
         executor.shutdownNow()
         try { executor.awaitTermination(500, TimeUnit.MILLISECONDS) } catch (_: InterruptedException) {

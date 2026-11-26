@@ -1,51 +1,55 @@
 package dev.jusu.knix.transfer
 
 import dev.jusu.knix.quickconnect.QuickConnectTicket
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
-import java.nio.charset.StandardCharsets
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Minimal one-time QR rendezvous listener. This is not the file-transfer engine:
- * it accepts only a bounded KNIX rendezvous hello and never accepts file bytes.
- * A secure authenticated session protocol must replace this handshake before transfers ship.
+ * One-time QR listener that completes authenticated ephemeral ECDH pairing.
+ * It does not accept file payloads; encrypted transfer framing is a later stage.
  */
 class KnixRendezvousServer(
     private val onReady: (QuickConnectTicket) -> Unit,
     private val onStatus: (String) -> Unit,
+    private val onPaired: (KnixSecurePairing.Result) -> Unit = {},
     private val port: Int = 0
 ) {
     private val running = AtomicBoolean(false)
     private val executor = Executors.newSingleThreadExecutor()
     @Volatile private var server: ServerSocket? = null
-    @Volatile private var activeTicket: QuickConnectTicket? = null
 
     fun start(deviceName: String): Boolean {
         if (!running.compareAndSet(false, true)) return false
         executor.execute {
             try {
-                val socket = ServerSocket(port, 8)
-                socket.soTimeout = 1000
-                server = socket
+                val listener = ServerSocket(port, 8)
+                listener.soTimeout = 1000
+                server = listener
                 val host = findLocalIpv4()
                     ?: throw IllegalStateException("Connect to a Wi-Fi network or hotspot before creating a QR code")
-                val ticket = QuickConnectTicket.create(host, socket.localPort, deviceName)
-                activeTicket = ticket
+                val ticket = QuickConnectTicket.create(host, listener.localPort, deviceName)
                 onReady(ticket)
-                onStatus("Quick Connect is ready. QR expires in about two minutes.")
+                onStatus("Secure pairing QR is ready. It expires in about two minutes.")
                 while (running.get() && !ticket.isExpired()) {
                     try {
-                        socket.accept().use { client -> handleHello(client, ticket) }
+                        listener.accept().use { client ->
+                            client.soTimeout = 8_000
+                            try {
+                                val paired = KnixSecurePairing.respond(client, ticket.challenge)
+                                onPaired(paired)
+                                onStatus("Secure pairing complete with fingerprint ${paired.peerFingerprint}. File transfer is the next stage.")
+                                running.set(false)
+                            } catch (e: Exception) {
+                                onStatus("Pairing attempt rejected: ${e.message ?: "protocol error"}")
+                            }
+                        }
                     } catch (_: java.net.SocketTimeoutException) {
-                        // Poll the stop flag and ticket expiry.
+                        // Periodically check stop and ticket expiry.
                     }
                 }
                 if (running.get()) onStatus("Quick Connect QR expired. Create a new one to continue.")
@@ -53,33 +57,11 @@ class KnixRendezvousServer(
                 if (running.get()) onStatus("Quick Connect could not start: ${e.message ?: "network unavailable"}")
             } finally {
                 running.set(false)
-                activeTicket = null
                 try { server?.close() } catch (_: Exception) { }
                 server = null
             }
         }
         return true
-    }
-
-    private fun handleHello(client: Socket, ticket: QuickConnectTicket) {
-        client.soTimeout = 3000
-        val input = client.getInputStream()
-        val lineBytes = java.io.ByteArrayOutputStream()
-        while (lineBytes.size() <= 160) {
-            val next = input.read()
-            if (next == -1 || next == 10) break
-            if (next != 13) lineBytes.write(next)
-        }
-        if (lineBytes.size() > 160) return
-        val line = lineBytes.toString(StandardCharsets.US_ASCII.name())
-        if (line != "KNIX-HELLO/1 ${ticket.challenge}" || ticket.isExpired()) {
-            client.getOutputStream().write("KNIX-REJECT/1\n".toByteArray(StandardCharsets.US_ASCII))
-            return
-        }
-        client.getOutputStream().write("KNIX-RENDEZVOUS-OK/1\n".toByteArray(StandardCharsets.US_ASCII))
-        onStatus("A device presented the QR challenge. Secure pairing and file transfer are not implemented yet.")
-        // One-time ticket: stop accepting further attempts after a successful challenge.
-        running.set(false)
     }
 
     fun stop() {
@@ -100,8 +82,6 @@ class KnixRendezvousServer(
                 .filterIsInstance<Inet4Address>()
                 .firstOrNull { !it.isLoopbackAddress && !it.isLinkLocalAddress }
                 ?.hostAddress
-        } catch (_: Exception) {
-            null
-        }
+        } catch (_: Exception) { null }
     }
 }

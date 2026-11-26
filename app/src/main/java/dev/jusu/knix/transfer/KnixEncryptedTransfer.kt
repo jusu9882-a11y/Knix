@@ -202,7 +202,10 @@ object KnixEncryptedTransfer {
         }
         require(partial.length() == total) { "Received file size mismatch" }
         val actualDigest = digest(partial)
-        require(MessageDigest.isEqual(actualDigest, expectedDigest)) { "File SHA-256 verification failed" }
+        if (!MessageDigest.isEqual(actualDigest, expectedDigest)) {
+            partial.delete()
+            throw SecurityException("File SHA-256 verification failed; invalid partial data was discarded")
+        }
         if (!partial.renameTo(destination)) {
             FileInputStream(partial).use { input ->
                 FileOutputStream(destination).use { output -> input.copyTo(output); output.fd.sync() }

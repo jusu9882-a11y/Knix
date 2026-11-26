@@ -64,6 +64,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class MainActivity : ComponentActivity() {
     private val peers = mutableStateListOf<DiscoveredPeer>()
     private val history = mutableStateListOf<TransferHistoryEntry>()
+    private val queuedUris = mutableStateListOf<Uri>()
     private lateinit var historyStore: TransferHistoryStore
     private val selectedTab = mutableStateOf("Home")
     private val status = mutableStateOf("Ready to discover nearby devices")
@@ -80,8 +81,16 @@ class MainActivity : ComponentActivity() {
     private var pairedSocket: Socket? = null
     private val transferExecutor = Executors.newSingleThreadExecutor()
 
-    private val openFileLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) sendSelectedFile(uri)
+    private val openFilesLauncher = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) {
+            uris.forEach { uri ->
+                try { contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+                catch (_: Exception) { }
+            }
+            queuedUris.clear()
+            queuedUris.addAll(uris.distinct())
+            status.value = "${queuedUris.size} file(s) added to the send queue"
+        }
     }
     private val qrScanLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
@@ -202,15 +211,20 @@ class MainActivity : ComponentActivity() {
                             }
                             "Send" -> {
                                 Text("Send files", style = MaterialTheme.typography.titleLarge)
-                                Text("Connect to another Knix phone, then choose a file to send.")
+                                Text("Connect to another Knix phone, then choose one or more files to send.")
                                 Card(Modifier.fillMaxWidth()) {
                                     Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                         Text("1. Connect to receiver", style = MaterialTheme.typography.titleMedium)
                                         Text(if (pairedSocket != null) "Secure connection established." else "Scan the receiver's temporary QR code. Both phones must use the same Wi-Fi or hotspot.")
                                         Button(onClick = ::scanQuickConnect) { Text("Scan receiver QR") }
                                         Text("2. Select a file", style = MaterialTheme.typography.titleMedium)
-                                        Button(onClick = { openFileLauncher.launch(arrayOf("*/*")) }, enabled = pairedSocket != null) {
-                                            Text("Choose file to send")
+                                        Button(onClick = { openFilesLauncher.launch(arrayOf("*/*")) }, enabled = pairedSocket != null) {
+                                            Text("Choose multiple files")
+                                        }
+                                        if (queuedUris.isNotEmpty()) {
+                                            Text("${queuedUris.size} file(s) queued")
+                                            OutlinedButton(onClick = { queuedUris.clear(); status.value = "Send queue cleared" }) { Text("Clear queue") }
+                                            Button(onClick = ::sendQueuedFiles, enabled = pairedSocket != null) { Text("Send queued files") }
                                         }
                                         Text(status.value, style = MaterialTheme.typography.bodySmall)
                                         if (transferProgress.value.isNotBlank()) Text(transferProgress.value)
@@ -391,24 +405,36 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun sendSelectedFile(uri: Uri) {
+    private fun sendQueuedFiles() {
         val socket = pairedSocket ?: run { status.value = "Connect to a receiver first"; return }
         val key = pairedSessionKey?.copyOf() ?: run { status.value = "Secure session key is unavailable"; return }
-        status.value = "Preparing selected file…"
+        val uris = queuedUris.toList()
+        if (uris.isEmpty()) { status.value = "Choose files before sending"; key.fill(0); return }
+        if (uris.size > 50) { status.value = "A batch can contain at most 50 files"; key.fill(0); return }
+        queuedUris.clear()
+        status.value = "Preparing ${uris.size} file(s)…"
         transferExecutor.execute {
-            var temp: File? = null
+            val temporaryFiles = mutableListOf<File>()
             try {
-                val name = queryDisplayName(uri) ?: "Knix-file"
-                temp = File(cacheDir, "knix-send-${System.nanoTime()}.tmp")
-                contentResolver.openInputStream(uri)?.use { input ->
-                    temp.outputStream().use { output -> input.copyTo(output) }
-                } ?: throw IllegalStateException("Cannot open selected file")
-                val result = KnixEncryptedTransfer.sendFile(socket, key, temp, name) { progress ->
-                    runOnUiThread { transferProgress.value = "${progress.transferred} / ${progress.total} bytes" }
+                val sources = uris.mapIndexed { index, uri ->
+                    val name = queryDisplayName(uri) ?: "Knix-file-${index + 1}"
+                    val temp = File(cacheDir, "knix-send-${System.nanoTime()}-$index.tmp")
+                    temporaryFiles += temp
+                    contentResolver.openInputStream(uri)?.use { input ->
+                        temp.outputStream().use { output -> input.copyTo(output) }
+                    } ?: throw IllegalStateException("Cannot open selected file: $name")
+                    temp to name
                 }
-                recordHistory(name, "Sent", result.bytes, result.sha256)
+                val results = KnixEncryptedTransfer.sendFiles(socket, key, sources) { fileIndex, fileCount, progress ->
+                    runOnUiThread {
+                        transferProgress.value = "File $fileIndex of $fileCount • ${progress.transferred} / ${progress.total} bytes"
+                    }
+                }
+                results.forEachIndexed { index, result ->
+                    recordHistory(sources[index].second, "Sent", result.bytes, result.sha256)
+                }
                 runOnUiThread {
-                    status.value = "Transfer complete. Sent ${result.bytes} bytes; SHA-256 verified by receiver."
+                    status.value = "Batch complete: ${results.size} file(s) sent and verified."
                     transferProgress.value = ""
                     closePairedConnection()
                 }
@@ -416,11 +442,12 @@ class MainActivity : ComponentActivity() {
                 try { socket.close() } catch (_: Exception) { }
                 runOnUiThread {
                     closePairedConnection()
-                    status.value = "Send failed: ${e.message ?: "connection error"}. Reconnect to resume the saved partial file."
+                    status.value = "Batch stopped: ${e.message ?: "connection error"}. Reconnect and select the remaining files again."
+                    transferProgress.value = ""
                 }
             } finally {
                 key.fill(0)
-                temp?.delete()
+                temporaryFiles.forEach { it.delete() }
             }
         }
     }
@@ -481,12 +508,14 @@ class MainActivity : ComponentActivity() {
                         incomingRequest.value = false
                         status.value = "Transfer approved. Receiving encrypted file…"
                     }
-                    val result = KnixEncryptedTransfer.receiveFile(socket, transferKey, folder) { progress ->
-                        runOnUiThread { transferProgress.value = "${progress.transferred} / ${progress.total} bytes" }
+                    val results = KnixEncryptedTransfer.receiveFiles(socket, transferKey, folder) { fileIndex, fileCount, progress ->
+                        runOnUiThread {
+                            transferProgress.value = "File $fileIndex of $fileCount • ${progress.transferred} / ${progress.total} bytes"
+                        }
                     }
-                    recordHistory(result.file.name, "Received", result.bytes, result.sha256)
+                    results.forEach { result -> recordHistory(result.file.name, "Received", result.bytes, result.sha256) }
                     runOnUiThread {
-                        status.value = "Received ${result.file.name} (${result.bytes} bytes). SHA-256 verified. Saved in: ${folder.absolutePath}"
+                        status.value = "Received ${results.size} file(s). All SHA-256 checks passed. Saved in: ${folder.absolutePath}"
                         transferProgress.value = ""
                         closePairedConnection()
                     }

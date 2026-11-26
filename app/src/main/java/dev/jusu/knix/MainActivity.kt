@@ -49,6 +49,7 @@ import dev.jusu.knix.data.TransferHistoryEntry
 import dev.jusu.knix.data.TransferHistoryStore
 import dev.jusu.knix.discovery.DiscoveredPeer
 import dev.jusu.knix.discovery.KnixDiscovery
+import dev.jusu.knix.discovery.KnixWifiDirectConnection
 import dev.jusu.knix.quickconnect.QuickConnectQr
 import dev.jusu.knix.quickconnect.QuickConnectTicket
 import dev.jusu.knix.transfer.KnixTransferForegroundService
@@ -77,6 +78,9 @@ class MainActivity : ComponentActivity() {
     private var pendingApproval: CountDownLatch? = null
     private var pendingApprovalChoice: AtomicBoolean? = null
     private var discovery: KnixDiscovery? = null
+    private var wifiDirect: KnixWifiDirectConnection? = null
+    private var p2pLocalAddress: String? = null
+    private val p2pStatus = mutableStateOf("Wi-Fi Direct not connected")
     private var rendezvous: KnixRendezvousServer? = null
     private var pairedSessionKey: ByteArray? = null
     private var pairedSocket: Socket? = null
@@ -347,6 +351,30 @@ class MainActivity : ComponentActivity() {
         if (missing.isEmpty()) startDiscovery() else permissionLauncher.launch(missing.toTypedArray())
     }
 
+    private fun connectWifiDirect(peer: DiscoveredPeer) {
+        requestPermissionsAndStart()
+        val address = peer.address ?: run { status.value = "Peer address is unavailable"; return }
+        if (wifiDirect == null) {
+            wifiDirect = KnixWifiDirectConnection(applicationContext,
+                onStatus = { message -> runOnUiThread { p2pStatus.value = message } },
+                onConnected = { info, localAddress ->
+                    runOnUiThread {
+                        p2pLocalAddress = if (info.isGroupOwner) info.groupOwnerAddress?.hostAddress else localAddress
+                        p2pStatus.value = "Wi-Fi Direct ready • ${p2pLocalAddress ?: "P2P address unavailable"}"
+                        if (p2pLocalAddress == null) status.value = "Wi-Fi Direct connected, but the P2P interface address could not be found. QR transfer cannot start yet."
+                    }
+                })
+        }
+        wifiDirect?.connect(address)
+    }
+
+    private fun disconnectWifiDirect() {
+        wifiDirect?.disconnect()
+        wifiDirect = null
+        p2pLocalAddress = null
+        p2pStatus.value = "Wi-Fi Direct disconnected"
+    }
+
     private fun startDiscovery() {
         if (discovery != null) return
         peers.clear()
@@ -549,7 +577,8 @@ class MainActivity : ComponentActivity() {
                     pendingApprovalChoice = null
                     runOnUiThread { incomingRequest.value = false }
                 }
-            }
+            },
+            preferredHost = p2pLocalAddress
         )
         rendezvous = server
         if (!server.start(Build.MODEL ?: "Android device")) {
@@ -583,6 +612,8 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         stopDiscovery()
         stopQuickConnect()
+        wifiDirect?.disconnect()
+        wifiDirect = null
         transferExecutor.shutdownNow()
         super.onDestroy()
     }

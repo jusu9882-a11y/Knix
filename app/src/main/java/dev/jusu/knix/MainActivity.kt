@@ -5,6 +5,12 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Build
 import android.os.Bundle
+import android.app.Activity
+import com.google.zxing.integration.android.IntentIntegrator
+import com.journeyapps.barcodescanner.CaptureActivity
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.nio.charset.StandardCharsets
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -43,6 +49,13 @@ class MainActivity : ComponentActivity() {
     private var discovery: KnixDiscovery? = null
     private var rendezvous: KnixRendezvousServer? = null
 
+    private val qrScanLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val raw = result.data?.getStringExtra(IntentIntegrator.EXTRA_RESULT_CONTENT)
+            if (raw.isNullOrBlank()) status.value = "No QR code was read" else connectFromQr(raw)
+        } else status.value = "QR scan cancelled"
+    }
+
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
@@ -72,7 +85,9 @@ class MainActivity : ComponentActivity() {
                                 Text("Show a temporary QR code so another Knix device can find this phone on the local network.")
                                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                     Button(onClick = ::startQuickConnect) { Text("Create receive QR") }
-                                    OutlinedButton(onClick = ::stopQuickConnect) { Text("Close QR") }
+                                    OutlinedButton(onClick = ::scanQuickConnect) { Text("Scan QR") }
+                                }
+                                OutlinedButton(onClick = ::stopQuickConnect) { Text("Close QR / receiver") }
                                 }
                                 qrBitmap.value?.let { bitmap ->
                                     Image(bitmap.asImageBitmap(), "Temporary Knix quick connect QR code",
@@ -135,6 +150,44 @@ class MainActivity : ComponentActivity() {
         discovery?.stop()
         discovery = null
         status.value = "Discovery stopped"
+    }
+
+
+    private fun scanQuickConnect() {
+        val intent = IntentIntegrator(this).apply {
+            setCaptureActivity(CaptureActivity::class.java)
+            setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
+            setPrompt("Scan the receiver's Knix QR code")
+            setBeepEnabled(false)
+            setOrientationLocked(false)
+        }.createScanIntent()
+        qrScanLauncher.launch(intent)
+    }
+
+    private fun connectFromQr(raw: String) {
+        val ticket = try {
+            QuickConnectTicket.parse(raw)
+        } catch (e: Exception) {
+            status.value = "Invalid Knix QR: " + (e.message ?: "cannot read ticket")
+            return
+        }
+        status.value = "Connecting to " + ticket.deviceName + "…"
+        Thread {
+            val message = try {
+                Socket().use { socket ->
+                    socket.connect(InetSocketAddress(ticket.host, ticket.port), 5000)
+                    socket.soTimeout = 5000
+                    socket.getOutputStream().write(("KNIX-HELLO/1 " + ticket.challenge + "\n").toByteArray(StandardCharsets.US_ASCII))
+                    val response = socket.getInputStream().bufferedReader(StandardCharsets.US_ASCII).readLine()?.take(128)
+                    if (response == "KNIX-RENDEZVOUS-OK/1") {
+                        "QR rendezvous reached " + ticket.deviceName + ". Secure pairing is the next stage."
+                    } else "Receiver rejected the QR rendezvous"
+                }
+            } catch (e: Exception) {
+                "Could not connect: " + (e.message ?: "network error")
+            }
+            runOnUiThread { status.value = message }
+        }.start()
     }
 
     private fun startQuickConnect() {

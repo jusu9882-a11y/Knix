@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class KnixRendezvousServer(
     private val onReady: (QuickConnectTicket) -> Unit,
     private val onStatus: (String) -> Unit,
-    private val onPaired: (KnixSecurePairing.Result) -> Unit = {},
+    private val onPaired: (Socket, KnixSecurePairing.Result) -> Unit = { _, _ -> },
     private val port: Int = 0
 ) {
     private val running = AtomicBoolean(false)
@@ -37,16 +37,16 @@ class KnixRendezvousServer(
                 onStatus("Secure pairing QR is ready. It expires in about two minutes.")
                 while (running.get() && !ticket.isExpired()) {
                     try {
-                        listener.accept().use { client ->
-                            client.soTimeout = 8_000
-                            try {
-                                val paired = KnixSecurePairing.respond(client, ticket.challenge)
-                                onPaired(paired)
-                                onStatus("Secure pairing complete with fingerprint ${paired.peerFingerprint}. File transfer is the next stage.")
-                                running.set(false)
-                            } catch (e: Exception) {
-                                onStatus("Pairing attempt rejected: ${e.message ?: "protocol error"}")
-                            }
+                        val client = listener.accept()
+                        client.soTimeout = 8_000
+                        try {
+                            val paired = KnixSecurePairing.respond(client, ticket.challenge)
+                            client.soTimeout = 0
+                            onPaired(client, paired)
+                            running.set(false)
+                        } catch (e: Exception) {
+                            try { client.close() } catch (_: Exception) { }
+                            onStatus("Pairing or transfer failed: ${e.message ?: "protocol error"}")
                         }
                     } catch (_: java.net.SocketTimeoutException) {
                         // Periodically check stop and ticket expiry.
